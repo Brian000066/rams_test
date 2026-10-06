@@ -111,7 +111,7 @@ def _spci(
         return 0.0
     proposed = [*group, candidate]
     spatial_phase = _phase_alignment(evaluator, server_id, proposed)
-    common_ratio = _common_message_ratio(devices, proposed, required_features)
+    common_ratio = _common_message_ratio(devices, proposed, set())
     return spatial_phase * common_ratio
 
 

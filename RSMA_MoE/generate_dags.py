@@ -78,15 +78,16 @@ def resolve_branch_spec(spec: DAGSpec, rng: random.Random) -> DAGSpec:
         raise ValueError("num_branches range must be (min_branches, max_branches).")
 
     feasible: list[int] = []
+    endpoint_count = 1 + int(spec.single_sink)
     for branch_count in range(min_branches, max_branches + 1):
-        if spec.num_nodes < branch_count + 1:
+        if spec.num_nodes < branch_count + endpoint_count:
             continue
         if spec.branch_length_range is None:
             feasible.append(branch_count)
             continue
         min_length, max_length = spec.branch_length_range
-        min_total = 1 + branch_count * min_length
-        max_total = 1 + branch_count * max_length
+        min_total = endpoint_count + branch_count * min_length
+        max_total = endpoint_count + branch_count * max_length
         if min_total <= spec.num_nodes <= max_total:
             feasible.append(branch_count)
 
@@ -219,10 +220,11 @@ def validate_branch_spec(spec: DAGSpec) -> None:
         return
     if spec.num_branches < 1:
         raise ValueError("num_branches must be at least 1.")
-    if spec.num_nodes < spec.num_branches + 1:
+    endpoint_count = 1 + int(spec.single_sink)
+    if spec.num_nodes < spec.num_branches + endpoint_count:
         raise ValueError(
-            "num_nodes must be at least num_branches + 1 when using "
-            "branch-based generation."
+            "num_nodes must fit one source, one node per branch, and the "
+            "optional shared sink when using branch-based generation."
         )
 
     if spec.branch_length_range is not None:
@@ -231,8 +233,8 @@ def validate_branch_spec(spec: DAGSpec) -> None:
             raise ValueError("branch_length_range min must be at least 1.")
         if max_length < min_length:
             raise ValueError("branch_length_range must be (min_length, max_length).")
-        min_total = 1 + spec.num_branches * min_length
-        max_total = 1 + spec.num_branches * max_length
+        min_total = endpoint_count + spec.num_branches * min_length
+        max_total = endpoint_count + spec.num_branches * max_length
         if not min_total <= spec.num_nodes <= max_total:
             raise ValueError(
                 f"num_nodes={spec.num_nodes} cannot fit "
@@ -247,14 +249,15 @@ def allocate_branch_lengths(spec: DAGSpec, rng: random.Random) -> list[int]:
     if spec.num_branches is None:
         raise ValueError("num_branches is required for branch allocation.")
 
+    reserved_nodes = 1 + int(spec.single_sink)
     if spec.branch_length_range is None:
         min_length = 1
-        max_length = spec.num_nodes - 1
+        max_length = spec.num_nodes - reserved_nodes
     else:
         min_length, max_length = spec.branch_length_range
 
     lengths = [min_length] * spec.num_branches
-    remaining = spec.num_nodes - 1 - sum(lengths)
+    remaining = spec.num_nodes - reserved_nodes - sum(lengths)
 
     while remaining > 0:
         candidates = [
@@ -271,13 +274,19 @@ def allocate_branch_lengths(spec: DAGSpec, rng: random.Random) -> list[int]:
     return lengths
 
 
-def branch_layer_widths(branch_lengths: Sequence[int]) -> list[int]:
+def branch_layer_widths(
+    branch_lengths: Sequence[int],
+    single_sink: bool = False,
+) -> list[int]:
     """Return layer widths for one source plus branch positions."""
     max_length = max(branch_lengths)
-    return [1] + [
+    widths = [1] + [
         sum(length >= position for length in branch_lengths)
         for position in range(1, max_length + 1)
     ]
+    if single_sink:
+        widths.append(1)
+    return widths
 
 
 def generate_branch_dag(
@@ -298,7 +307,10 @@ def generate_branch_dag(
     """Generate one DAG with adjustable variable-length branches."""
     validate_num_experts(num_experts)
     branch_lengths = allocate_branch_lengths(spec, rng)
-    layer_widths = branch_layer_widths(branch_lengths)
+    layer_widths = branch_layer_widths(
+        branch_lengths,
+        single_sink=spec.single_sink,
+    )
 
     graph = nx.DiGraph(
         graph_index=graph_index,
@@ -312,7 +324,7 @@ def generate_branch_dag(
         allow_skip_edges=spec.allow_skip_edges,
         allow_early_branch_end=True,
         single_source=True,
-        single_sink=False,
+        single_sink=spec.single_sink,
         task_id=f"task_{graph_index}",
         task_name=f"Task {graph_index}",
         deadline_seconds=deadline_seconds,
@@ -388,7 +400,53 @@ def generate_branch_dag(
                     if rng.random() < spec.edge_probability:
                         graph.add_edge(source_node, target_node)
 
+    if spec.single_sink:
+        sink = f"v{graph_index}_{node_counter}"
+        sink_layer = max(branch_lengths) + 1
+        graph.add_node(
+            sink,
+            **make_node_attributes(
+                node_name=sink,
+                layer=sink_layer,
+                num_experts=num_experts,
+                num_iot_features=num_iot_features,
+                iot_features_per_node_range=iot_features_per_node_range,
+                rng=rng,
+                reconstruction_sigma=reconstruction_sigma,
+                reconstruction_error_range=reconstruction_error_range,
+                gating_peak_count_range=gating_peak_count_range,
+                gating_peak_mass_range=gating_peak_mass_range,
+                num_calibration_samples=num_calibration_samples,
+                calibration_loss_range=calibration_loss_range,
+            ),
+        )
+        graph.nodes[sink]["branch_id"] = -2
+        graph.nodes[sink]["branch_position"] = sink_layer
+        existing_leaves = [
+            node
+            for node in graph.nodes
+            if node != sink and graph.out_degree(node) == 0
+        ]
+        for leaf in existing_leaves:
+            graph.add_edge(leaf, sink)
+
     update_required_upstream_outputs(graph)
+
+    if len(graph.nodes) != spec.num_nodes:
+        raise RuntimeError(
+            f"Generated branch graph has {len(graph.nodes)} nodes; "
+            f"expected {spec.num_nodes}."
+        )
+    sources = [node for node in graph.nodes if graph.in_degree(node) == 0]
+    sinks = [node for node in graph.nodes if graph.out_degree(node) == 0]
+    if spec.single_source and len(sources) != 1:
+        raise RuntimeError(
+            f"Generated branch graph has {len(sources)} sources; expected exactly one."
+        )
+    if spec.single_sink and len(sinks) != 1:
+        raise RuntimeError(
+            f"Generated branch graph has {len(sinks)} sinks; expected exactly one."
+        )
 
     if not nx.is_directed_acyclic_graph(graph):
         raise RuntimeError("Generated graph is not a DAG.")
@@ -657,7 +715,7 @@ def generate_multiple_dags(
     reconstruction_sigma: float = 1.0,
     reconstruction_error_range: tuple[float, float] = (0.8, 1.5),
     gating_peak_count_range: tuple[int, int] = (2, 4),
-    gating_peak_mass_range: tuple[float, float] = (0.65, 0.85),
+    gating_peak_mass_range: tuple[float, float] = (0.45, 0.60),
     num_calibration_samples: int = 20,
     calibration_loss_range: tuple[float, float] = (1.0, 4.0),
     task_deadline_seconds_range: tuple[int, int] = (60, 60),

@@ -77,7 +77,7 @@ def _replace_devices(
         improved = True
         while improved:
             improved = False
-            current_ratio = _common_message_ratio(devices, group, required_features)
+            current_ratio = _common_message_ratio(devices, group, set())
             current_cost = _group_rsma_cost(devices, evaluator, server_id, group, required_features)
             best = None
             for candidate in list(unselected):
@@ -92,7 +92,7 @@ def _replace_devices(
                             continue
                         if _beamforming_gain(evaluator, server_id, proposed) < beamforming_gain_threshold:
                             continue
-                        new_ratio = _common_message_ratio(devices, proposed, required_features)
+                        new_ratio = _common_message_ratio(devices, proposed, set())
                         if new_ratio <= current_ratio:
                             continue
                         new_cost = _group_rsma_cost(devices, evaluator, server_id, proposed, required_features)

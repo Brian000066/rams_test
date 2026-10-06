@@ -15,7 +15,7 @@ class ExperimentConfig:
     # Reproducibility / output.
     auto_random_seed: bool = True
     num_runs: int = 100
-    num_dags: int = 5
+    num_dags: int = 8
     random_seed: int = 42
     network_random_seed: int = 1
     output_dir: Path = BASE_DIR / "generated_dags"
@@ -25,7 +25,7 @@ class ExperimentConfig:
     # DAG / task graph settings.
     common_dag_spec: DAGSpec = field(
         default_factory=lambda: DAGSpec(
-            num_nodes=6,
+            num_nodes=10,
             num_branches=(2,4),
             branch_length_range=(1, 5),
             depth=8,
@@ -34,18 +34,39 @@ class ExperimentConfig:
             allow_skip_edges=False,
             allow_early_branch_end=True,
             single_source=True,
-            single_sink=False,
+            single_sink=True,
         )
     )
 
     # Expert / task metadata settings.
-    num_experts: int = 16
-    expert_memory_range: tuple[float, float] = (128.0, 256.0)
+    num_experts: int = 8
+    expert_memory_sizes_mb: tuple[float, ...] = (
+        14.16,
+        17.30,
+        20.45,
+        23.59,
+        26.74,
+        29.88,
+        33.03,
+        36.18,
+    )
+    expert_memory_range: tuple[float, float] = (14.16, 36.18)
+    expert_inference_times_ms: tuple[float, ...] = (
+        35.0,
+        45.0,
+        58.0,
+        72.0,
+        88.0,
+        105.0,
+        125.0,
+        150.0,
+    )
+    reasoning_data_sizes_bytes: tuple[int, ...] = (256, 512, 1024)
     task_deadline_seconds_range: tuple[int, int] = (30, 120)
     num_iot_features: int = 100
     iot_features_per_node_range: tuple[int, int] = (2, 5)
     gating_peak_count_range: tuple[int, int] = (2, 4)
-    gating_peak_mass_range: tuple[float, float] = (0.65, 0.85)
+    gating_peak_mass_range: tuple[float, float] = (0.45, 0.60)
 
     # Performance loss settings.
     loss_threshold: Optional[float] = None
@@ -85,45 +106,40 @@ class ExperimentConfig:
 
     # RSMA / edge network settings. These follow the original SIoT-RSMA defaults
     # as closely as possible, with multiple edge servers and coverage limits.
-    num_edge_servers: int = 10
+    num_edge_servers: int = 15 #ori is 10
     num_iot_devices: int = 100
     area_size: float = 2000.0
     cell_radius: float = 350.0
-    num_antennas: int = 4
-    iot_features_per_device_range: tuple[int, int] = (3, 12)
+    num_antennas: int = 1
+    iot_features_per_device_range: tuple[int, int] = (4, 8)
     iot_server_feature_overlap_ratio: float = 0.20
     iot_global_random_feature_fraction: float = 0.2
-    #experts_per_server: int = 5
-    experts_per_server: int = 8
-    #server_gpu_memory_range: tuple[float, float] = (640.0, 896.0)
-    server_gpu_memory_range: tuple[float, float] = (1280.0, 1792.0)
-    wired_rate_range: tuple[float, float] = (5e8, 1.5e9)
+    experts_per_server: int = 5
+    server_gpu_memory_range: tuple[float, float] = (130.0, 150.0)
+    # Paper: [10, 100] MB/s = [80, 800] Mbit/s.
+    wired_rate_range: tuple[float, float] = (80e6, 800e6)
     wired_extra_link_probability: float = 0.05
+    wired_edge_weight_range: tuple[float, float] = (1.0, 3.0) #8-10
     wavelength: float = 0.125
-    feature_bits_range: tuple[float, float] = (8000.0, 80000.0)
-    noise_power: float = 1e-18
+    # Paper: 16 KiB per feature.
+    default_feature_bits: float = 16.0 * 1024.0 * 8.0
+    feature_bits_range: tuple[float, float] = (
+        16.0 * 1024.0 * 8.0,
+        16.0 * 1024.0 * 8.0,
+    )
+    # Paper PSDs, converted from dBm/Hz to W/Hz.
+    noise_power: float = 10.0 ** ((-174.0 - 30.0) / 10.0)
     common_power_ratio: float = 0.6
-    max_device_power: float = 1.2589e-3
+    # Kept under the existing field name for compatibility; interpreted as PSD.
+    max_device_power: float = 10.0 ** ((1.0 - 30.0) / 10.0)
     max_group_size: int = 4
-    min_rate: float = 1.0
+    min_rate: float = 0.4e6
 
-    # Objective cost weights.
-    # Calibrated so activation, bandwidth, and forwarding each contribute a
-    # similar order of magnitude in a typical run.
-    # 5,000 Hz bandwidth gap contributes 500 cost with c_bw=0.1.
-    c_bw: float = 0.05
-    c_act: float = 20.0
+    # Objective unit costs from the simulation setup.
+    c_bw: float = 0.000025
+    c_act: float = 0.6
     c_fwd: float = 1.0
-
-
-
-
-
-
-
-
-
-
+    c_inf: float = 0.06
 
 
 

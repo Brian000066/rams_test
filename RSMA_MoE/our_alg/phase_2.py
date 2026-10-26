@@ -56,10 +56,18 @@ class Phase2GroupingBackhaulMixin:
 
         order, mst_report = self._cfrg_mst_order(selected_devices)
         self._cfrg_assignments = assignments
-        self._cfrg_latest_start = self.evaluator.latest_subtask_start_times(assignments)
+        subtask_features = self._cfrg_subtask_features(assignments, ownership)
+        self._cfrg_latest_start = self.evaluator.latest_subtask_start_times(
+            assignments,
+            subtask_features=subtask_features,
+        )
         groups, group_records, dp_report = self._cfrg_interval_groups(order, ownership)
         backhaul, backhaul_plan = self._cfrg_backhaul_plan(group_records)
-        subtask_features = self._cfrg_subtask_features(assignments, ownership)
+        feature_source_map = self._cfrg_feature_source_map(
+            assignments,
+            ownership,
+            group_records,
+        )
 
         required_probability: Dict[str, float] = {}
         reconstruction_loss: Dict[str, float] = {}
@@ -102,6 +110,8 @@ class Phase2GroupingBackhaulMixin:
             data_req,
             backhaul,
             feature_to_groups,
+            feature_source_map=feature_source_map,
+            subtask_features=subtask_features,
         )
         eval_config = replace(self.config, derive_bandwidth=False)
         evaluator = FormulationEvaluator(
@@ -116,6 +126,7 @@ class Phase2GroupingBackhaulMixin:
             resolved_groups,
             backhaul,
             subtask_features=subtask_features,
+            feature_source_map=feature_source_map,
         )
         violations = [*self.scheduler_violations, *local_violations, *evaluation.violations]
 
@@ -132,6 +143,21 @@ class Phase2GroupingBackhaulMixin:
                 "feature_ownership": {
                     f"{server_id}:{feature}": device_id
                     for (server_id, feature), device_id in sorted(ownership.items())
+                },
+                "feature_source_map": {
+                    f"{task_id}:{subtask_id}:{target_server}:{feature}": {
+                        "source_server": source_server,
+                        "group_id": group_id,
+                    }
+                    for (
+                        task_id,
+                        subtask_id,
+                        target_server,
+                        feature,
+                    ), (
+                        source_server,
+                        group_id,
+                    ) in sorted(feature_source_map.items())
                 },
                 "remaining_feature_deficits": {
                     server_id: sorted(features)
@@ -154,7 +180,7 @@ class Phase2GroupingBackhaulMixin:
                 "localization_acceptance_threshold": 1.0,
                 "pruning_rule": "remove selected IoTs whose destination set is empty",
                 "compatibility_formula": (
-                    "min_s distance(n,m)*(2-cos(phase_angle[n,s]-phase_angle[m,s]))"
+                    "min_s distance(n,m)*(2-cos(phi[n,s]-phi[m,s])), phi[n,s]=2*pi*d[n,s]*cos(theta[n,s])/lambda"
                 ),
                 "utility_formula": (
                     "c_bw*(sum singleton bandwidth-group bandwidth)"
@@ -194,6 +220,7 @@ class Phase2GroupingBackhaulMixin:
             backhaul=backhaul,
             violations=violations,
             evaluation=evaluation,
+            feature_source_map=feature_source_map,
         )
 
     def _cfrg_feature_deficits(
@@ -584,6 +611,14 @@ class Phase2GroupingBackhaulMixin:
     def _updated_json_number(value: float) -> float | None:
         return value if math.isfinite(value) else None
 
+    def _cfrg_db_phase(self, device_id: DeviceId, server_id: ServerId) -> float:
+        """DB phase phi_{n,s} = 2*pi*d_{n,s}*cos(theta_{n,s}) / lambda (same as the DB gain)."""
+        device = self.devices[device_id]
+        theta = float(device.phase_angle.get(server_id, 0.0))
+        distance = float(device.distance.get(server_id, 0.0))
+        wavelength = max(float(self.evaluator.config.wavelength), 1e-12)
+        return 2.0 * math.pi * distance * math.cos(theta) / wavelength
+
     def _cfrg_pair_dissimilarity(
         self,
         first: DeviceId,
@@ -595,8 +630,8 @@ class Phase2GroupingBackhaulMixin:
         distance = math.dist(self.devices[first].position, self.devices[second].position)
         candidates = []
         for server_id in common_servers:
-            first_phase = float(self.devices[first].phase_angle.get(server_id, 0.0))
-            second_phase = float(self.devices[second].phase_angle.get(server_id, 0.0))
+            first_phase = self._cfrg_db_phase(first, server_id)
+            second_phase = self._cfrg_db_phase(second, server_id)
             value = distance * (2.0 - math.cos(first_phase - second_phase))
             candidates.append((value, server_id))
         return min(candidates, key=lambda item: (item[0], item[1]))
@@ -622,6 +657,26 @@ class Phase2GroupingBackhaulMixin:
                     }
                 )
 
+        # Root score: mean pairwise incompatibility of each IoT to all other
+        # selected IoTs, taken from the full pairwise delta matrix before the
+        # MST is built.  Pairs without a common reachable server have no delta
+        # and are skipped; an IoT with no defined delta gets +inf.
+        delta_sums: Dict[DeviceId, float] = {device_id: 0.0 for device_id in devices}
+        delta_counts: Dict[DeviceId, int] = {device_id: 0 for device_id in devices}
+        for (first, second), value in pair_values.items():
+            delta_sums[first] += value
+            delta_sums[second] += value
+            delta_counts[first] += 1
+            delta_counts[second] += 1
+        mean_delta = {
+            device_id: (
+                delta_sums[device_id] / delta_counts[device_id]
+                if delta_counts[device_id]
+                else float("inf")
+            )
+            for device_id in devices
+        }
+
         tree: Dict[DeviceId, list[Tuple[float, DeviceId]]] = {
             device_id: [] for device_id in devices
         }
@@ -629,7 +684,11 @@ class Phase2GroupingBackhaulMixin:
         roots: list[DeviceId] = []
         mst_edges: list[dict[str, Any]] = []
         while unvisited:
-            root = min(unvisited, key=self._id_sort_key)
+            # BFS root: the IoT with the smallest mean delta (ties: lowest id).
+            root = min(
+                unvisited,
+                key=lambda device_id: (mean_delta[device_id], self._id_sort_key(device_id)),
+            )
             roots.append(root)
             component = {root}
             unvisited.remove(root)
@@ -680,6 +739,8 @@ class Phase2GroupingBackhaulMixin:
                     queue.append(neighbor)
         return order, {
             "roots": roots,
+            "root_rule": "minimum mean pairwise delta (before MST)",
+            "root_mean_delta": {root: mean_delta[root] for root in roots},
             "traversal": "BFS",
             "pairwise_compatibility": pair_report,
             "edges": mst_edges,
@@ -694,6 +755,8 @@ class Phase2GroupingBackhaulMixin:
         if count == 0:
             return [], [], {"objective": 0.0, "predecessors": []}
         group_limit = max(1, int(self.config.max_group_size))
+        # Fixed singleton baseline o(n), D(n), b(n), C_ind(n) for this DP run.
+        self._cfrg_singleton_cache = {}
         dp = [-float("inf")] * (count + 1)
         predecessor = [-1] * (count + 1)
         interval_cache: Dict[Tuple[int, int], dict[str, Any]] = {}
@@ -758,43 +821,80 @@ class Phase2GroupingBackhaulMixin:
             "group_limit": group_limit,
         }
 
+    def _cfrg_singleton_baseline(
+        self,
+        device_id: DeviceId,
+        ownership: Mapping[Tuple[ServerId, str], DeviceId],
+    ) -> dict[str, Any] | None:
+        """Fixed singleton transmission of IoT n: o(n), D(n), b(n), C_ind(n).
+
+        C_ind(n) = c_fwd * sum_{s in D(n), s != o(n)} w(o(n), s) is the
+        backhaul cost IoT n would cause if it transmitted alone.
+        """
+        cache = getattr(self, "_cfrg_singleton_cache", None)
+        if cache is None:
+            cache = self._cfrg_singleton_cache = {}
+        if device_id not in cache:
+            info = self._cfrg_delivery_info([device_id], ownership)
+            if info is None:
+                cache[device_id] = None
+            else:
+                origin = info["origin_server"]
+                backhaul_weight = sum(
+                    self.evaluator.wired_weight(origin, server_id)
+                    for server_id in info["destinations"]
+                    if server_id != origin
+                )
+                cache[device_id] = {
+                    "device": device_id,
+                    "origin_server": origin,
+                    "destinations": sorted(info["destinations"]),
+                    "bandwidth": info["bandwidth"],
+                    "backhaul_weight": backhaul_weight,
+                    "backhaul_cost": self.config.c_fwd * backhaul_weight,
+                }
+        return cache[device_id]
+
     def _cfrg_interval_info(
         self,
         members: Sequence[DeviceId],
         ownership: Mapping[Tuple[ServerId, str], DeviceId],
     ) -> dict[str, Any]:
+        """Utility of grouping `members`, measured against the singleton baseline.
+
+        U(g) = c_bw * [sum_{n in g} b(n) - b(g)] + [C_ind(g) - C_grp(g)]
+        C_ind(g) = sum_{n in g} c_fwd * sum_{s in D(n), s != o(n)} w(o(n), s)
+        C_grp(g) = c_fwd * sum_{s in D(g), s != o(g)} w(o(g), s)
+
+        A singleton has U = 0.  U may be negative and is not clipped.  Since
+        sum_g C_ind(g) is the same for every partition, the optimal partition
+        equals that of the previous utility c_bw*saving - C_grp(g).
+        """
+        infeasible = {
+            "feasible": False,
+            "members": list(members),
+            "utility": -float("inf"),
+        }
         delivery = self._cfrg_delivery_info(members, ownership)
         if delivery is None:
-            return {
-                "feasible": False,
-                "members": list(members),
-                "utility": -float("inf"),
-            }
-        singleton_bandwidth = 0.0
+            return infeasible
         singleton_details = []
         for device_id in members:
-            singleton = self._cfrg_delivery_info([device_id], ownership)
+            singleton = self._cfrg_singleton_baseline(device_id, ownership)
             if singleton is None:
-                return {
-                    "feasible": False,
-                    "members": list(members),
-                    "utility": -float("inf"),
-                }
-            singleton_bandwidth += singleton["bandwidth"]
-            singleton_details.append(
-                {
-                    "device": device_id,
-                    "origin_server": singleton["origin_server"],
-                    "bandwidth": singleton["bandwidth"],
-                }
-            )
+                return infeasible
+            singleton_details.append(singleton)
+        singleton_bandwidth = sum(item["bandwidth"] for item in singleton_details)
+        singleton_backhaul_cost = sum(item["backhaul_cost"] for item in singleton_details)
         bandwidth_saving = singleton_bandwidth - delivery["bandwidth"]
         backhaul_weight = sum(
             self.evaluator.wired_weight(delivery["origin_server"], server_id)
             for server_id in delivery["destinations"]
+            if server_id != delivery["origin_server"]
         )
         forwarding_cost = self.config.c_fwd * backhaul_weight
-        utility = self.config.c_bw * bandwidth_saving - forwarding_cost
+        backhaul_saving = singleton_backhaul_cost - forwarding_cost
+        utility = self.config.c_bw * bandwidth_saving + backhaul_saving
         return {
             "feasible": True,
             **delivery,
@@ -803,6 +903,8 @@ class Phase2GroupingBackhaulMixin:
             "bandwidth_saving": bandwidth_saving,
             "backhaul_weight": backhaul_weight,
             "forwarding_cost": forwarding_cost,
+            "singleton_backhaul_cost": singleton_backhaul_cost,
+            "backhaul_saving": backhaul_saving,
             "utility": utility,
         }
 
@@ -955,3 +1057,46 @@ class Phase2GroupingBackhaulMixin:
                     set(subtask.required_features) & owned_by_server.get(server_id, set())
                 )
         return subtask_features
+
+    def _cfrg_feature_source_map(
+        self,
+        assignments: Mapping[AssignmentKey, Sequence[Tuple[ServerId, str]]],
+        ownership: Mapping[Tuple[ServerId, str], DeviceId],
+        group_records: Sequence[Mapping[str, Any]],
+    ) -> Dict[Tuple[str, str, ServerId, str], Tuple[ServerId, str]]:
+        """Bind every CFRG feature demand to its selected IoT group."""
+        device_to_group: Dict[DeviceId, Tuple[ServerId, str]] = {}
+        for record in group_records:
+            source = (
+                str(record["origin_server"]),
+                str(record["group_id"]),
+            )
+            for device_id in record["members"]:
+                device_to_group[str(device_id)] = source
+
+        subtask_by_key = {
+            (task.id, subtask.id): subtask
+            for task in self.tasks.values()
+            for subtask in task.subtasks
+        }
+        source_map: Dict[
+            Tuple[str, str, ServerId, str],
+            Tuple[ServerId, str],
+        ] = {}
+        for key, pairs in assignments.items():
+            subtask = subtask_by_key.get(key)
+            if subtask is None:
+                continue
+            for target_server in {server_id for server_id, _ in pairs}:
+                for feature in sorted(subtask.required_features):
+                    owner = ownership.get((target_server, feature))
+                    if owner is None:
+                        continue
+                    source = device_to_group.get(owner)
+                    if source is None:
+                        raise ValueError(
+                            f"CFRG owner {owner} for {target_server}:{feature} "
+                            "does not belong to any selected group"
+                        )
+                    source_map[(key[0], key[1], target_server, feature)] = source
+        return source_map

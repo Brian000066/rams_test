@@ -1,17 +1,20 @@
 <?xml version='1.0' encoding='utf-8'?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
-  <key id="d28" for="node" attr.name="unique_subtask_id" attr.type="string" />
-  <key id="d27" for="node" attr.name="branch_position" attr.type="long" />
-  <key id="d26" for="node" attr.name="branch_id" attr.type="long" />
-  <key id="d25" for="node" attr.name="calibration_losses" attr.type="string" />
-  <key id="d24" for="node" attr.name="reconstruction_loss" attr.type="double" />
-  <key id="d23" for="node" attr.name="reconstruction_errors" attr.type="string" />
-  <key id="d22" for="node" attr.name="expert_confidence" attr.type="string" />
-  <key id="d21" for="node" attr.name="gating_weights" attr.type="string" />
-  <key id="d20" for="node" attr.name="required_data" attr.type="string" />
-  <key id="d19" for="node" attr.name="output_key" attr.type="string" />
-  <key id="d18" for="node" attr.name="prompt" attr.type="string" />
-  <key id="d17" for="node" attr.name="layer" attr.type="long" />
+  <key id="d31" for="node" attr.name="unique_subtask_id" attr.type="string" />
+  <key id="d30" for="node" attr.name="branch_position" attr.type="long" />
+  <key id="d29" for="node" attr.name="branch_id" attr.type="long" />
+  <key id="d28" for="node" attr.name="calibration_losses" attr.type="string" />
+  <key id="d27" for="node" attr.name="reconstruction_loss" attr.type="double" />
+  <key id="d26" for="node" attr.name="reconstruction_errors" attr.type="string" />
+  <key id="d25" for="node" attr.name="expert_confidence" attr.type="string" />
+  <key id="d24" for="node" attr.name="gating_weights" attr.type="string" />
+  <key id="d23" for="node" attr.name="required_data" attr.type="string" />
+  <key id="d22" for="node" attr.name="output_key" attr.type="string" />
+  <key id="d21" for="node" attr.name="prompt" attr.type="string" />
+  <key id="d20" for="node" attr.name="layer" attr.type="long" />
+  <key id="d19" for="graph" attr.name="shared_subtask_ids" attr.type="string" />
+  <key id="d18" for="graph" attr.name="shared_subtask_instance_count" attr.type="long" />
+  <key id="d17" for="graph" attr.name="requested_shared_subtask_ratio" attr.type="double" />
   <key id="d16" for="graph" attr.name="layer_widths" attr.type="string" />
   <key id="d15" for="graph" attr.name="num_experts" attr.type="long" />
   <key id="d14" for="graph" attr.name="deadline_seconds" attr.type="long" />
@@ -31,164 +34,167 @@
   <key id="d0" for="graph" attr.name="graph_index" attr.type="long" />
   <graph edgedefault="directed">
     <node id="v1_0">
-      <data key="d17">0</data>
-      <data key="d18">Complete subtask v1_0 in layer 0.</data>
-      <data key="d19">v1_0_output</data>
-      <data key="d20">{"upstream_outputs": [], "iot_features": [6, 24, 85]}</data>
-      <data key="d21">[0.099993, 0.201576, 0.177885, 0.214459, 0.097098, 0.107658, 0.037554, 0.063777]</data>
-      <data key="d22">[0.545343, 0.97162, 0.949569, 0.979613, 0.483296, 0.864482, 0.513802, 0.674724]</data>
-      <data key="d23">[1.119266, 1.119266, 1.119266]</data>
-      <data key="d24">1.879135</data>
-      <data key="d25">[2.701655, 2.445372, 2.856115, 3.260031, 2.062397, 2.972966, 2.235191, 1.932143, 2.544666, 3.220096, 2.492454, 1.835871, 1.944333, 3.040619, 1.921896, 1.564136, 1.589746, 1.822882, 2.771382, 2.506226]</data>
-      <data key="d26">-1</data>
-      <data key="d27">0</data>
-      <data key="d28">subtask_0</data>
+      <data key="d20">0</data>
+      <data key="d21">Complete subtask v1_0 in layer 0.</data>
+      <data key="d22">v1_0_output</data>
+      <data key="d23">{"upstream_outputs": [], "iot_features": [14, 29, 32, 49]}</data>
+      <data key="d24">[0.009447, 0.038348, 0.022738, 0.01211, 0.015387, 0.035031, 0.020794, 0.038443, 0.018457, 0.033278, 0.025468, 0.020418, 0.016536, 0.656935, 0.017068, 0.019542]</data>
+      <data key="d25">[0.253809, 0.907486, 0.58818, 0.146985, 0.183955, 0.915277, 0.611143, 0.859981, 0.360559, 0.678065, 0.640619, 0.238788, 0.221468, 0.94657, 0.138429, 0.387622]</data>
+      <data key="d26">[0.927636, 0.927636, 0.927636, 0.927636]</data>
+      <data key="d27">1.721017</data>
+      <data key="d28">[1.628874, 2.341646, 3.084765, 2.125622, 1.900943, 2.285954, 3.232918, 1.643381, 1.674987, 2.114391, 2.712077, 2.79942, 2.612991, 2.77823, 2.666922, 3.015956, 2.765608, 1.598365, 2.044832, 2.368629]</data>
+      <data key="d29">-1</data>
+      <data key="d30">0</data>
+      <data key="d31">shared_subtask_0</data>
     </node>
     <node id="v1_1">
-      <data key="d17">1</data>
-      <data key="d18">Complete subtask v1_1 in layer 1.</data>
-      <data key="d19">v1_1_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [0, 15, 30]}</data>
-      <data key="d21">[0.176805, 0.198375, 0.042625, 0.180012, 0.146327, 0.090962, 0.034245, 0.130649]</data>
-      <data key="d22">[0.92127, 0.898314, 0.692302, 0.97582, 0.902104, 0.685684, 0.524304, 0.554862]</data>
-      <data key="d23">[1.309325, 1.309325, 1.309325]</data>
-      <data key="d24">2.571498</data>
-      <data key="d25">[2.894555, 3.176825, 2.503293, 1.516235, 2.331979, 2.86216, 1.571704, 2.127211, 1.54218, 3.128955, 2.41064, 3.298247, 2.85559, 2.883511, 3.188725, 2.32286, 2.902653, 3.252365, 2.358226, 2.81037]</data>
-      <data key="d26">0</data>
-      <data key="d27">1</data>
-      <data key="d28">subtask_1</data>
+      <data key="d20">1</data>
+      <data key="d21">Complete subtask v1_1 in layer 1.</data>
+      <data key="d22">v1_1_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [7, 81]}</data>
+      <data key="d24">[0.029822, 0.700241, 0.017412, 0.017532, 0.019885, 0.01077, 0.029468, 0.027506, 0.03062, 0.027582, 0.013054, 0.005649, 0.00514, 0.010176, 0.024314, 0.030829]</data>
+      <data key="d25">[0.857114, 0.871736, 0.294463, 0.132352, 0.188309, 0.174031, 0.713122, 0.738793, 0.878555, 0.59747, 0.135915, 0.152024, 0.374036, 0.3233, 0.619425, 0.976202]</data>
+      <data key="d26">[1.054148, 1.054148]</data>
+      <data key="d27">1.111228</data>
+      <data key="d28">[2.265058, 2.733797, 1.701345, 2.936976, 2.865318, 3.28694, 2.064782, 3.234267, 3.173161, 1.512803, 1.541358, 2.924677, 2.782572, 2.127791, 2.861352, 3.204882, 1.504747, 2.439902, 3.040373, 2.176204]</data>
+      <data key="d29">0</data>
+      <data key="d30">1</data>
+      <data key="d31">shared_subtask_9</data>
     </node>
     <node id="v1_2">
-      <data key="d17">2</data>
-      <data key="d18">Complete subtask v1_2 in layer 2.</data>
-      <data key="d19">v1_2_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_1", "output_key": "v1_1_output"}], "iot_features": [14, 26, 56, 71, 77]}</data>
-      <data key="d21">[0.208181, 0.043557, 0.169238, 0.160149, 0.139635, 0.144998, 0.051578, 0.082664]</data>
-      <data key="d22">[0.919135, 0.67703, 0.959517, 0.978935, 0.457126, 0.946934, 0.662238, 0.683361]</data>
-      <data key="d23">[1.139189, 1.139189, 1.139189, 1.139189, 1.139189]</data>
-      <data key="d24">3.244379</data>
-      <data key="d25">[2.782435, 2.724994, 2.273136, 1.963724, 2.641258, 3.265711, 2.466891, 2.399394, 2.590808, 2.894051, 2.361535, 2.044965, 2.270351, 3.184975, 1.520646, 2.736035, 1.849933, 2.0164, 2.372257, 3.106613]</data>
-      <data key="d26">0</data>
-      <data key="d27">2</data>
-      <data key="d28">subtask_2</data>
+      <data key="d20">2</data>
+      <data key="d21">Complete subtask v1_2 in layer 2.</data>
+      <data key="d22">v1_2_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_1", "output_key": "v1_1_output"}, {"source_node": "v1_6", "output_key": "v1_6_output"}], "iot_features": [14, 45, 65, 86, 90]}</data>
+      <data key="d24">[0.038317, 0.69132, 0.010152, 0.007323, 0.015222, 0.009961, 0.007219, 0.025193, 0.015194, 0.025064, 0.037328, 0.032372, 0.036155, 0.023698, 0.016726, 0.008756]</data>
+      <data key="d25">[0.870016, 0.951468, 0.123165, 0.207829, 0.292115, 0.211882, 0.144469, 0.7428, 0.395107, 0.588969, 0.895099, 0.628793, 0.956266, 0.68755, 0.144199, 0.332766]</data>
+      <data key="d26">[1.180505, 1.180505, 1.180505, 1.180505, 1.180505]</data>
+      <data key="d27">3.48398</data>
+      <data key="d28">[2.458646, 3.276973, 3.28425, 2.321251, 2.037688, 3.107573, 2.048267, 2.438882, 1.823249, 1.628653, 1.607883, 2.58717, 1.887729, 2.482247, 1.839997, 1.945247, 1.830539, 2.395239, 2.990083, 2.217735]</data>
+      <data key="d29">0</data>
+      <data key="d30">2</data>
+      <data key="d31">private_g1_2</data>
     </node>
     <node id="v1_3">
-      <data key="d17">3</data>
-      <data key="d18">Complete subtask v1_3 in layer 3.</data>
-      <data key="d19">v1_3_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_2", "output_key": "v1_2_output"}], "iot_features": [43, 88]}</data>
-      <data key="d21">[0.132737, 0.051682, 0.15191, 0.165221, 0.104864, 0.138723, 0.135894, 0.118969]</data>
-      <data key="d22">[0.516003, 0.694772, 0.951956, 0.976064, 0.495897, 0.85578, 0.918204, 0.550428]</data>
-      <data key="d23">[1.357864, 1.357864]</data>
-      <data key="d24">1.843795</data>
-      <data key="d25">[2.602082, 3.166747, 1.844362, 2.466467, 2.13699, 1.870348, 1.686112, 2.646375, 1.564002, 1.578323, 3.240739, 2.539887, 2.203815, 1.76124, 2.084257, 1.75271, 1.529207, 3.081033, 1.823131, 2.178087]</data>
-      <data key="d26">0</data>
-      <data key="d27">3</data>
-      <data key="d28">subtask_3</data>
+      <data key="d20">3</data>
+      <data key="d21">Complete subtask v1_3 in layer 3.</data>
+      <data key="d22">v1_3_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_2", "output_key": "v1_2_output"}, {"source_node": "v1_8", "output_key": "v1_8_output"}], "iot_features": [10, 99]}</data>
+      <data key="d24">[0.024571, 0.018748, 0.016998, 0.007495, 0.033745, 0.020735, 0.685735, 0.020386, 0.013249, 0.019114, 0.015098, 0.036609, 0.016939, 0.036836, 0.008399, 0.025343]</data>
+      <data key="d25">[0.655417, 0.161684, 0.240968, 0.32195, 0.905981, 0.66123, 0.946162, 0.669797, 0.126554, 0.32961, 0.167122, 0.978165, 0.224197, 0.890003, 0.154491, 0.64279]</data>
+      <data key="d26">[1.359785, 1.359785]</data>
+      <data key="d27">1.849015</data>
+      <data key="d28">[2.131369, 2.003927, 1.626066, 2.610019, 2.358045, 2.981207, 2.289747, 2.121913, 2.926359, 1.538946, 1.610866, 2.982029, 1.505772, 2.866793, 3.234822, 3.26913, 1.568962, 2.163183, 2.460081, 1.649087]</data>
+      <data key="d29">0</data>
+      <data key="d30">3</data>
+      <data key="d31">private_g1_3</data>
     </node>
     <node id="v1_4">
-      <data key="d17">1</data>
-      <data key="d18">Complete subtask v1_4 in layer 1.</data>
-      <data key="d19">v1_4_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [2, 9, 10, 16, 32]}</data>
-      <data key="d21">[0.16109, 0.049091, 0.18671, 0.066173, 0.149536, 0.151665, 0.110704, 0.125031]</data>
-      <data key="d22">[0.960226, 0.685457, 0.928027, 0.607909, 0.91116, 0.942306, 0.614412, 0.659734]</data>
-      <data key="d23">[1.127359, 1.127359, 1.127359, 1.127359, 1.127359]</data>
-      <data key="d24">3.177346</data>
-      <data key="d25">[3.222426, 2.098434, 3.15193, 2.438268, 2.029272, 3.092998, 3.079914, 1.558299, 1.71113, 2.225125, 3.247177, 2.934296, 2.662335, 3.129818, 3.25535, 2.000636, 2.572873, 1.675024, 1.615273, 2.699285]</data>
-      <data key="d26">1</data>
-      <data key="d27">1</data>
-      <data key="d28">subtask_4</data>
+      <data key="d20">1</data>
+      <data key="d21">Complete subtask v1_4 in layer 1.</data>
+      <data key="d22">v1_4_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [9, 95]}</data>
+      <data key="d24">[0.016459, 0.011151, 0.032806, 0.017764, 0.006358, 0.025328, 0.034555, 0.659176, 0.031531, 0.032836, 0.026559, 0.014249, 0.02559, 0.014264, 0.023764, 0.02761]</data>
+      <data key="d25">[0.314217, 0.232791, 0.970082, 0.192228, 0.391336, 0.295166, 0.930736, 0.865594, 0.732312, 0.866896, 0.569722, 0.399407, 0.749425, 0.356596, 0.106412, 0.640899]</data>
+      <data key="d26">[1.392278, 1.392278]</data>
+      <data key="d27">1.938438</data>
+      <data key="d28">[1.52858, 2.553757, 2.198693, 1.971432, 2.7703, 1.74251, 2.958166, 2.882348, 2.642153, 3.155344, 2.727872, 2.688428, 1.623696, 2.316921, 3.159747, 1.607364, 1.939655, 3.158415, 2.224598, 1.734829]</data>
+      <data key="d29">1</data>
+      <data key="d30">1</data>
+      <data key="d31">shared_subtask_2</data>
     </node>
     <node id="v1_5">
-      <data key="d17">2</data>
-      <data key="d18">Complete subtask v1_5 in layer 2.</data>
-      <data key="d19">v1_5_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_4", "output_key": "v1_4_output"}], "iot_features": [5, 57, 68, 76, 95]}</data>
-      <data key="d21">[0.177784, 0.093881, 0.1339, 0.132382, 0.182116, 0.055144, 0.162857, 0.061936]</data>
-      <data key="d22">[0.899729, 0.512372, 0.905524, 0.463331, 0.964924, 0.487536, 0.872099, 0.484991]</data>
-      <data key="d23">[1.478931, 1.478931, 1.478931, 1.478931, 1.478931]</data>
-      <data key="d24">5.468092</data>
-      <data key="d25">[2.640164, 1.711935, 1.917962, 2.331549, 2.809403, 1.799799, 2.012348, 2.220563, 2.428947, 1.550026, 2.000666, 2.980193, 1.874431, 3.165763, 2.579662, 2.899039, 1.908466, 2.462999, 2.120543, 2.92123]</data>
-      <data key="d26">1</data>
-      <data key="d27">2</data>
-      <data key="d28">subtask_5</data>
+      <data key="d20">2</data>
+      <data key="d21">Complete subtask v1_5 in layer 2.</data>
+      <data key="d22">v1_5_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_4", "output_key": "v1_4_output"}, {"source_node": "v1_6", "output_key": "v1_6_output"}], "iot_features": [16, 29, 38, 78, 99]}</data>
+      <data key="d24">[0.022625, 0.027484, 0.024067, 0.010389, 0.026613, 0.00948, 0.019356, 0.006684, 0.020614, 0.016692, 0.005077, 0.746542, 0.007778, 0.010427, 0.014917, 0.031255]</data>
+      <data key="d25">[0.739467, 0.945624, 0.635861, 0.372704, 0.880263, 0.398816, 0.745134, 0.163306, 0.693641, 0.394479, 0.244766, 0.905498, 0.132016, 0.359781, 0.13605, 0.878304]</data>
+      <data key="d26">[1.318048, 1.318048, 1.318048, 1.318048, 1.318048]</data>
+      <data key="d27">4.343126</data>
+      <data key="d28">[1.528903, 3.119169, 2.641414, 2.074786, 2.401679, 2.657633, 2.563856, 1.728813, 3.242407, 3.235683, 3.215577, 3.249827, 2.501689, 3.055652, 2.481458, 2.788729, 2.751082, 2.960936, 1.938163, 2.19147]</data>
+      <data key="d29">1</data>
+      <data key="d30">2</data>
+      <data key="d31">private_g1_5</data>
     </node>
     <node id="v1_6">
-      <data key="d17">3</data>
-      <data key="d18">Complete subtask v1_6 in layer 3.</data>
-      <data key="d19">v1_6_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_2", "output_key": "v1_2_output"}, {"source_node": "v1_5", "output_key": "v1_5_output"}], "iot_features": [2, 47, 66, 90]}</data>
-      <data key="d21">[0.125319, 0.13308, 0.12728, 0.166473, 0.145391, 0.103903, 0.073458, 0.125096]</data>
-      <data key="d22">[0.585281, 0.871291, 0.940694, 0.961474, 0.893408, 0.698745, 0.482234, 0.531272]</data>
-      <data key="d23">[1.453546, 1.453546, 1.453546, 1.453546]</data>
-      <data key="d24">4.225592</data>
-      <data key="d25">[2.65601, 1.861287, 2.190616, 2.72442, 2.069036, 2.120616, 2.641978, 2.421233, 1.900644, 1.577347, 1.769607, 2.713642, 3.019578, 1.97566, 2.496593, 3.218548, 2.069334, 2.141988, 2.546813, 1.740251]</data>
-      <data key="d26">1</data>
-      <data key="d27">3</data>
-      <data key="d28">subtask_6</data>
+      <data key="d20">1</data>
+      <data key="d21">Complete subtask v1_6 in layer 1.</data>
+      <data key="d22">v1_6_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [10, 14, 27]}</data>
+      <data key="d24">[0.737675, 0.008216, 0.011579, 0.022881, 0.024798, 0.027998, 0.023226, 0.019128, 0.013322, 0.020859, 0.02355, 0.006734, 0.014976, 0.00699, 0.03117, 0.006898]</data>
+      <data key="d25">[0.880353, 0.184458, 0.189348, 0.551086, 0.926746, 0.938519, 0.725104, 0.128518, 0.284525, 0.552647, 0.604647, 0.146069, 0.261942, 0.254553, 0.933218, 0.348458]</data>
+      <data key="d26">[1.064602, 1.064602, 1.064602]</data>
+      <data key="d27">1.700066</data>
+      <data key="d28">[1.934682, 2.804694, 2.649327, 2.905471, 2.178265, 3.125678, 2.733495, 2.299044, 2.77993, 2.713421, 2.853157, 3.275935, 2.266055, 2.468592, 2.517055, 2.005031, 2.975873, 2.795634, 2.176596, 1.602121]</data>
+      <data key="d29">2</data>
+      <data key="d30">1</data>
+      <data key="d31">private_g1_6</data>
     </node>
     <node id="v1_7">
-      <data key="d17">4</data>
-      <data key="d18">Complete subtask v1_7 in layer 4.</data>
-      <data key="d19">v1_7_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_1", "output_key": "v1_1_output"}, {"source_node": "v1_6", "output_key": "v1_6_output"}], "iot_features": [44, 55, 58, 61, 64]}</data>
-      <data key="d21">[0.240829, 0.063293, 0.079448, 0.292218, 0.082973, 0.031031, 0.079234, 0.130974]</data>
-      <data key="d22">[0.900049, 0.535559, 0.624301, 0.97997, 0.87336, 0.628514, 0.502084, 0.890164]</data>
-      <data key="d23">[1.185845, 1.185845, 1.185845, 1.185845, 1.185845]</data>
-      <data key="d24">3.515571</data>
-      <data key="d25">[2.810588, 2.938386, 2.288195, 1.773677, 3.17988, 2.059953, 2.924681, 3.288026, 2.25641, 2.25501, 1.833329, 1.831696, 2.267053, 2.77383, 2.264442, 1.534155, 2.420805, 3.201271, 2.612049, 2.281657]</data>
-      <data key="d26">1</data>
-      <data key="d27">4</data>
-      <data key="d28">subtask_7</data>
+      <data key="d20">2</data>
+      <data key="d21">Complete subtask v1_7 in layer 2.</data>
+      <data key="d22">v1_7_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_6", "output_key": "v1_6_output"}, {"source_node": "v1_8", "output_key": "v1_8_output"}], "iot_features": [36, 93]}</data>
+      <data key="d24">[0.01242, 0.005788, 0.008106, 0.034567, 0.02032, 0.006228, 0.027769, 0.017439, 0.030296, 0.008025, 0.729018, 0.034686, 0.031036, 0.012101, 0.012355, 0.009846]</data>
+      <data key="d25">[0.385045, 0.218369, 0.356323, 0.923485, 0.565341, 0.309616, 0.725565, 0.60776, 0.719552, 0.104981, 0.886717, 0.954073, 0.963304, 0.363958, 0.358136, 0.218598]</data>
+      <data key="d26">[1.018525, 1.018525]</data>
+      <data key="d27">1.037393</data>
+      <data key="d28">[1.858767, 3.27961, 1.825385, 2.59448, 2.710468, 2.969263, 1.718971, 1.908914, 2.987876, 2.346405, 2.264231, 3.031644, 2.825326, 1.891908, 2.187012, 2.1106, 3.175299, 1.717329, 2.289769, 2.511609]</data>
+      <data key="d29">2</data>
+      <data key="d30">2</data>
+      <data key="d31">shared_subtask_1</data>
     </node>
     <node id="v1_8">
-      <data key="d17">5</data>
-      <data key="d18">Complete subtask v1_8 in layer 5.</data>
-      <data key="d19">v1_8_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_7", "output_key": "v1_7_output"}], "iot_features": [3, 16]}</data>
-      <data key="d21">[0.0702, 0.201367, 0.094864, 0.14949, 0.136875, 0.191273, 0.081046, 0.074885]</data>
-      <data key="d22">[0.494436, 0.850933, 0.517669, 0.934102, 0.911939, 0.95301, 0.496835, 0.46651]</data>
-      <data key="d23">[1.49333, 1.49333]</data>
-      <data key="d24">2.230034</data>
-      <data key="d25">[2.75691, 2.432549, 1.703723, 2.969146, 2.580132, 2.28383, 3.106048, 2.429446, 2.96688, 1.95509, 2.324275, 1.697857, 2.210594, 2.998696, 2.679384, 2.886965, 3.067873, 2.875874, 3.052679, 3.045405]</data>
-      <data key="d26">1</data>
-      <data key="d27">5</data>
-      <data key="d28">subtask_8</data>
+      <data key="d20">1</data>
+      <data key="d21">Complete subtask v1_8 in layer 1.</data>
+      <data key="d22">v1_8_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_0", "output_key": "v1_0_output"}], "iot_features": [10, 30, 74, 75]}</data>
+      <data key="d24">[0.03239, 0.007117, 0.690564, 0.015006, 0.027802, 0.010613, 0.011829, 0.022625, 0.023394, 0.028905, 0.009162, 0.014136, 0.006225, 0.032959, 0.033832, 0.033441]</data>
+      <data key="d25">[0.642379, 0.264131, 0.925046, 0.110304, 0.606165, 0.171447, 0.15621, 0.290902, 0.602196, 0.747699, 0.226675, 0.389684, 0.230308, 0.851665, 0.966926, 0.934202]</data>
+      <data key="d26">[1.375915, 1.375915, 1.375915, 1.375915]</data>
+      <data key="d27">3.786284</data>
+      <data key="d28">[2.852046, 2.850809, 2.668099, 2.316733, 1.58758, 2.956703, 3.012323, 2.998017, 1.889949, 2.504497, 1.875999, 1.568701, 3.276582, 2.539864, 1.95843, 1.982164, 2.858903, 2.926068, 2.502296, 2.366744]</data>
+      <data key="d29">3</data>
+      <data key="d30">1</data>
+      <data key="d31">private_g1_8</data>
     </node>
     <node id="v1_9">
-      <data key="d17">6</data>
-      <data key="d18">Complete subtask v1_9 in layer 6.</data>
-      <data key="d19">v1_9_output</data>
-      <data key="d20">{"upstream_outputs": [{"source_node": "v1_3", "output_key": "v1_3_output"}, {"source_node": "v1_8", "output_key": "v1_8_output"}], "iot_features": [7, 33, 79, 90, 91]}</data>
-      <data key="d21">[0.091276, 0.157243, 0.14467, 0.220384, 0.081036, 0.207006, 0.034783, 0.063602]</data>
-      <data key="d22">[0.682696, 0.947649, 0.923885, 0.95147, 0.474026, 0.93777, 0.467825, 0.470992]</data>
-      <data key="d23">[1.148845, 1.148845, 1.148845, 1.148845, 1.148845]</data>
-      <data key="d24">3.299612</data>
-      <data key="d25">[2.655377, 1.752949, 1.518564, 2.506751, 1.752903, 2.497186, 1.924132, 1.760269, 2.346514, 3.24073, 1.906373, 2.053099, 1.500892, 3.230926, 3.225606, 2.718908, 3.016336, 3.254724, 2.777547, 2.336075]</data>
-      <data key="d26">-2</data>
-      <data key="d27">6</data>
-      <data key="d28">subtask_9</data>
+      <data key="d20">4</data>
+      <data key="d21">Complete subtask v1_9 in layer 4.</data>
+      <data key="d22">v1_9_output</data>
+      <data key="d23">{"upstream_outputs": [{"source_node": "v1_3", "output_key": "v1_3_output"}, {"source_node": "v1_5", "output_key": "v1_5_output"}, {"source_node": "v1_7", "output_key": "v1_7_output"}], "iot_features": [3, 38]}</data>
+      <data key="d24">[0.014784, 0.019488, 0.007553, 0.033542, 0.686905, 0.024553, 0.014428, 0.030235, 0.016949, 0.023814, 0.024874, 0.014252, 0.033942, 0.0178, 0.015087, 0.021794]</data>
+      <data key="d25">[0.198883, 0.385058, 0.259679, 0.935958, 0.859504, 0.724536, 0.355858, 0.936045, 0.125759, 0.733176, 0.616608, 0.104468, 0.952097, 0.317, 0.259133, 0.671289]</data>
+      <data key="d26">[1.150682, 1.150682]</data>
+      <data key="d27">1.324069</data>
+      <data key="d28">[2.772289, 2.810327, 2.818202, 3.08409, 1.999658, 2.350923, 2.377555, 2.898864, 2.895882, 1.678499, 2.822675, 3.257954, 2.544811, 2.534983, 2.64342, 1.792901, 2.762217, 1.665734, 1.63813, 1.983491]</data>
+      <data key="d29">-2</data>
+      <data key="d30">4</data>
+      <data key="d31">shared_subtask_12</data>
     </node>
     <edge source="v1_0" target="v1_1" />
     <edge source="v1_0" target="v1_4" />
+    <edge source="v1_0" target="v1_6" />
+    <edge source="v1_0" target="v1_8" />
     <edge source="v1_1" target="v1_2" />
-    <edge source="v1_1" target="v1_7" />
     <edge source="v1_2" target="v1_3" />
-    <edge source="v1_2" target="v1_6" />
     <edge source="v1_3" target="v1_9" />
     <edge source="v1_4" target="v1_5" />
-    <edge source="v1_5" target="v1_6" />
+    <edge source="v1_5" target="v1_9" />
     <edge source="v1_6" target="v1_7" />
-    <edge source="v1_7" target="v1_8" />
-    <edge source="v1_8" target="v1_9" />
+    <edge source="v1_6" target="v1_2" />
+    <edge source="v1_6" target="v1_5" />
+    <edge source="v1_7" target="v1_9" />
+    <edge source="v1_8" target="v1_3" />
+    <edge source="v1_8" target="v1_7" />
     <data key="d0">1</data>
     <data key="d1">branches</data>
     <data key="d2">10</data>
-    <data key="d3">2</data>
-    <data key="d4">[3, 5]</data>
-    <data key="d5">7</data>
-    <data key="d6">2</data>
+    <data key="d3">4</data>
+    <data key="d4">[3, 2, 2, 1]</data>
+    <data key="d5">5</data>
+    <data key="d6">4</data>
     <data key="d7">0.2</data>
     <data key="d8">False</data>
     <data key="d9">True</data>
@@ -196,8 +202,11 @@
     <data key="d11">True</data>
     <data key="d12">task_1</data>
     <data key="d13">Task 1</data>
-    <data key="d14">84</data>
-    <data key="d15">8</data>
-    <data key="d16">[1, 2, 2, 2, 1, 1, 1]</data>
+    <data key="d14">3</data>
+    <data key="d15">16</data>
+    <data key="d16">[1, 4, 3, 1, 1]</data>
+    <data key="d17">0.4</data>
+    <data key="d18">5</data>
+    <data key="d19">["shared_subtask_0", "shared_subtask_1", "shared_subtask_12", "shared_subtask_2", "shared_subtask_9"]</data>
   </graph>
 </graphml>

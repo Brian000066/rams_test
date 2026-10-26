@@ -56,9 +56,9 @@ Baseline 不是 random expert。Baseline 的 expert 仍照 Top-K 或 WDMoE 選�
 
 | 參數 | 目前值 | 說明 |
 |---|---:|---|
-| `num_runs` | `10` | 獨立平均次數。 |
-| `num_dags` | `5` | 每次實驗產生的 task graph 數量。 |
-| `num_nodes` | `6` | 每個 DAG 的 node/subtask 數量。 |
+| `num_runs` | `100` | 獨立平均次數。 |
+| `num_dags` | `8` | 每次實驗產生的 task graph 數量。 |
+| `num_nodes` | `10` | 每個 DAG 的 node/subtask 數量。 |
 | `num_branches` | `(2, 4)` | branch 數量範圍。 |
 | `branch_length_range` | `(1, 5)` | 每個 branch 長度範圍。 |
 | `edge_probability` | `0.2` | 額外 DAG edge 生成機率。 |
@@ -68,25 +68,31 @@ Baseline 不是 random expert。Baseline 的 expert 仍照 Top-K 或 WDMoE 選�
 
 | 參數 | 目前值 | 說明 |
 |---|---:|---|
-| `num_experts` | `16` | 全域 expert 種類數。 |
-| `expert_memory_range` | `(128, 256)` | 每個 expert memory size 範圍。 |
-| `experts_per_server` | `3` | 每台 server 存放 expert 數量。 |
-| `server_gpu_memory_range` | `(640, 896)` | 每台 server GPU memory limit。 |
+| `num_experts` | `100` | 全域 expert 數量；每個 expert 的 hidden dimension 從 [2304, 5888] 均勻隨機抽（固定 seed）。 |
+| `expert_memory_sizes_mb` | 隨機 | 每個 expert 從 [14.16, 36.18] MB 均勻隨機抽（固定 seed），與 hidden dimension 獨立。 |
+| `expert_inference_times_ms` | 由參數量換算 | 參數量 / server processing rate。 |
+| `experts_per_server` | `(10, 15)` | 每台 server 存放 expert 數；總數 < num_experts 時重抽，先讓每個 expert 至少一份，剩餘位置放複本（見 `expert_deployment.py`）。 |
+| `server_gpu_memory_range` | `(300, 380)` | 每台 server GPU memory（MB）；原為 (100, 130)，配合 100 個 expert 放大。 |
 | `topk_k` | `5` | Top-K baseline 的 K。 |
-| `gating_peak_count_range` | `(2, 4)` | 每個 subtask 有幾個高 gating expert。 |
-| `gating_peak_mass_range` | `(0.65, 0.85)` | 高 gating experts 分到的總 gating mass。 |
+| `gating_num_candidates` | `None` | 每個 subtask 有分數的候選 expert 數 = 錨點 server 存放的 expert 數（10–15），其餘 gating 為 0；設成整數則固定。 |
+| `gating_score_range` | `(0.1, 1.0)` | 候選 expert 原始分數 z 的抽樣範圍。 |
+| `gating_temperature` | `1.0` | gating = softmax(z / τ)，只在候選之間正規化。 |
+| `gating_anchor_count` | `5` | 隨機選一台 server，從它存放的 expert 中選 5 個取得最高分數，保證全域 Top-5 在同一台。 |
+| `gating_secondary_anchor_count` | `5` | 第二錨點：再選另一台 server，把接下來 5 個名次的 expert 放在它存放的 expert 上，讓大部分 subtask 有兩台可行 server。 |
+| confidence | `G / max G` | 最高者為 1，其餘依 gating 比例遞減；非候選為 0。 |
+| `calibration_loss_range` | `(4.0, 5.5)` | 原為 (3.0, 5.0)；候選數跟著錨點 server（10–15）、錨點 5 時，讓各方法的 loss 違規接近 0。 |
 
 ### IoT / Feature / Network
 
 | 參數 | 目前值 | 說明 |
 |---|---:|---|
-| `num_edge_servers` | `10` | Edge server 數量。 |
+| `num_edge_servers` | `8` | Edge server 數量。 |
 | `num_iot_devices` | `100` | IoT device 數量。 |
 | `num_iot_features` | `100` | 全域 feature 數量。 |
 | `iot_features_per_node_range` | `(2, 5)` | 每個 subtask 需要的 IoT feature 數量。 |
-| `iot_features_per_device_range` | `(3, 12)` | 每個 IoT device 擁有的 feature 數量。 |
+| `iot_features_per_device_range` | `(4, 8)` | 每個 IoT device 擁有的 feature 數量。 |
 | `iot_server_feature_overlap_ratio` | `0.20` | 相鄰 server feature pool 重疊比例。 |
-| `iot_global_random_feature_fraction` | `0.2` | IoT feature 中來自全域隨機池的比例。 |
+| `iot_global_random_feature_fraction` | `0.2` | IoT feature 中來自全域隨機池的比例（其餘依序從所屬 server 的方位 sector pool、距離 ring pool、server pool 抽取，讓附近 IoT 擁有相似 feature）。 |
 | `area_size` | `2000` | server / IoT 的平面範圍。 |
 | `cell_radius` | `350` | server 覆蓋半徑。 |
 | `wired_rate_range` | `(5e8, 1.5e9)` | server-to-server wired link rate 範圍。 |
@@ -119,9 +125,18 @@ Baseline 不是 random expert。Baseline 的 expert 仍照 Top-K 或 WDMoE 選�
 
 | 參數 | 目前值 | 說明 |
 |---|---:|---|
-| `c_act` | `20.0` | 每單位 expert model size activation cost。 |
-| `c_bw` | `0.05` | 每 Hz bandwidth cost。 |
-| `c_fwd` | `1.0` | 每個 forwarding / backhaul hop cost。 |
+| `c_act` | `2.0` | 每單位 expert model size activation cost。 |
+| `c_bw` | `0.0002` | 每 Hz bandwidth cost。 |
+| `c_fwd` | `10.0` | 每個 forwarding / backhaul hop cost。 |
+
+## Simulation Figures
+
+執行 `python sensitivity_analysis.py --runs 100` 會依設定產生四張圖：
+
+1. Number of graph nodes vs Total cost
+2. Number of K vs Total cost
+3. Number of graph nodes vs Count of hops
+4. Number of K vs Time of inference
 
 ## 主要公式
 

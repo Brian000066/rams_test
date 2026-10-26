@@ -2,12 +2,56 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import random
 from typing import Optional
 
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
 from generate_dags import DAGSpec
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+# Expert computational complexity uses three hidden-dimension-by-1024 projections.
+# Each of the NUM_EXPERTS global experts draws its hidden dimension uniformly
+# from EXPERT_HIDDEN_DIMENSION_RANGE with a fixed seed, so every run uses the
+# same expert model table.  Memory is drawn independently (not derived from
+# the hidden dimension) from EXPERT_MEMORY_RANGE_MB with its own fixed seed.
+EXPERT_HIDDEN_DIMENSION_RANGE: tuple[int, int] = (2304, 5888)
+EXPERT_MEMORY_RANGE_MB: tuple[float, float] = (14.16, 36.18)
+EXPERT_MEMORY_TABLE_SEED = 11
+NUM_EXPERTS = 100
+EXPERT_TABLE_SEED = 7
+EXPERT_INPUT_DIMENSION = 1024
+EXPERT_PROJECTION_COUNT = 3
+SERVER_PROCESSING_RATE = 300e6  # parameters per second
+
+
+def _build_expert_hidden_dimensions() -> tuple[int, ...]:
+    rng = random.Random(EXPERT_TABLE_SEED)
+    low, high = EXPERT_HIDDEN_DIMENSION_RANGE
+    return tuple(rng.randint(low, high) for _ in range(NUM_EXPERTS))
+
+
+EXPERT_HIDDEN_DIMENSIONS: tuple[int, ...] = _build_expert_hidden_dimensions()
+EXPERT_PARAMETER_COUNTS: tuple[int, ...] = tuple(
+    hidden_dimension * EXPERT_PROJECTION_COUNT * EXPERT_INPUT_DIMENSION
+    for hidden_dimension in EXPERT_HIDDEN_DIMENSIONS
+)
+def _build_expert_memory_sizes_mb() -> tuple[float, ...]:
+    rng = random.Random(EXPERT_MEMORY_TABLE_SEED)
+    low, high = EXPERT_MEMORY_RANGE_MB
+    return tuple(round(rng.uniform(low, high), 2) for _ in range(NUM_EXPERTS))
+
+
+EXPERT_MEMORY_SIZES_MB: tuple[float, ...] = _build_expert_memory_sizes_mb()
+EXPERT_INFERENCE_TIMES_MS: tuple[float, ...] = tuple(
+    # Per-feature fallback/base time.  A subtask's computation time multiplies
+    # this value by the number of selected features and takes the slowest of
+    # its parallel selected experts.
+    parameter_count / SERVER_PROCESSING_RATE * 1000.0
+    for parameter_count in EXPERT_PARAMETER_COUNTS
+)
 
 
 @dataclass(frozen=True)
@@ -37,36 +81,48 @@ class ExperimentConfig:
             single_sink=True,
         )
     )
+    # A shared-subtask ratio counts node instances whose unique ID is reused
+    # by another DAG. Each shared ID appears at most once in any one DAG.
+    shared_subtask_ratio: float = 0.4
+    shared_subtask_graph_count_range: tuple[int, int] = (2, 4)
+    # If set, exactly this many shared subtask kinds are created (each in
+    # 2-4 DAGs) and shared_subtask_ratio is ignored.
+    shared_subtask_kind_count: int | None = None
+    # Fig. 3 nested design: base server count kept identical for every larger count (None = off).
+    nested_server_base: int | None = None
+    # Fig. 7 nested storage: base experts_per_server range kept for every larger average (None = off).
+    nested_storage_base: tuple[int, int] | None = None
 
     # Expert / task metadata settings.
-    num_experts: int = 8
-    expert_memory_sizes_mb: tuple[float, ...] = (
-        14.16,
-        17.30,
-        20.45,
-        23.59,
-        26.74,
-        29.88,
-        33.03,
-        36.18,
-    )
-    expert_memory_range: tuple[float, float] = (14.16, 36.18)
-    expert_inference_times_ms: tuple[float, ...] = (
-        35.0,
-        45.0,
-        58.0,
-        72.0,
-        88.0,
-        105.0,
-        125.0,
-        150.0,
-    )
+    num_experts: int = NUM_EXPERTS
+    expert_hidden_dimensions: tuple[int, ...] = EXPERT_HIDDEN_DIMENSIONS
+    expert_parameter_counts: tuple[int, ...] = EXPERT_PARAMETER_COUNTS
+    expert_memory_sizes_mb: tuple[float, ...] | None = EXPERT_MEMORY_SIZES_MB
+    expert_memory_range: tuple[float, float] = EXPERT_MEMORY_RANGE_MB
+    expert_inference_times_ms: tuple[float, ...] = EXPERT_INFERENCE_TIMES_MS
+    # mu_s (parameters per second).  A (min, max) range gives every server its
+    # own rate ~ U[min, max], so the same expert computes at different speeds
+    # on different servers; a single number gives all servers the same rate.
+    server_processing_rate: float | tuple[float, float] = SERVER_PROCESSING_RATE  # 300e6 for every server
     reasoning_data_sizes_bytes: tuple[int, ...] = (256, 512, 1024)
-    task_deadline_seconds_range: tuple[int, int] = (30, 120)
+    task_deadline_seconds_range: tuple[int, int] = (3, 5)  #(30,120)
     num_iot_features: int = 100
     iot_features_per_node_range: tuple[int, int] = (2, 5)
-    gating_peak_count_range: tuple[int, int] = (2, 4)
-    gating_peak_mass_range: tuple[float, float] = (0.45, 0.60)
+    # Gating: per subtask, one anchor server is drawn and K experts get a raw
+    # score z ~ U(gating_score_range), where K = number of experts stored on
+    # that anchor server (10-15).  gating = softmax(z / gating_temperature)
+    # over the K candidates (others 0); confidence pi = G / max G (best = 1).
+    # gating_anchor_count of the top-scored candidates are stored on the
+    # anchor server, so the global top experts are co-located.
+    # Set gating_num_candidates to an int to force a fixed K instead.
+    gating_num_candidates: int | None = None
+    gating_anchor_count: int = 5
+    # Secondary anchor: the next-ranked candidates (after the primary anchor
+    # experts) are stored on a second, randomly chosen server, so most
+    # subtasks have two servers that can meet the loss threshold.
+    gating_secondary_anchor_count: int = 5
+    gating_score_range: tuple[float, float] = (0.1, 1.0)
+    gating_temperature: float = 1.0
 
     # Performance loss settings.
     loss_threshold: Optional[float] = None
@@ -75,7 +131,7 @@ class ExperimentConfig:
     reconstruction_sigma: float = 1.0
     reconstruction_error_range: tuple[float, float] = (0.8, 1.5)
     num_calibration_samples: int = 20
-    calibration_loss_range: tuple[float, float] = (1.5, 3.3)
+    calibration_loss_range: tuple[float, float] = (4.0, 5.5)  # previously (3.0, 5.0)
 
     # Which methods to run. The default workflow compares four baselines and JRGEP.
     run_hybrid_topk_gssgd_backhaul: bool = True
@@ -106,16 +162,19 @@ class ExperimentConfig:
 
     # RSMA / edge network settings. These follow the original SIoT-RSMA defaults
     # as closely as possible, with multiple edge servers and coverage limits.
-    num_edge_servers: int = 15 #ori is 10
-    num_iot_devices: int = 100
-    area_size: float = 2000.0
-    cell_radius: float = 350.0
+    num_edge_servers: int = 8 #ori is 10
+    num_iot_devices: int = 100  #100
+    area_size: float = 1000.0
+    cell_radius: float = 300.0
     num_antennas: int = 1
     iot_features_per_device_range: tuple[int, int] = (4, 8)
-    iot_server_feature_overlap_ratio: float = 0.20
+    iot_server_feature_overlap_ratio: float = 0.2
     iot_global_random_feature_fraction: float = 0.2
-    experts_per_server: int = 5
-    server_gpu_memory_range: tuple[float, float] = (130.0, 150.0)
+    experts_per_server: tuple[int, int] = (10, 15)
+    # Scaled for 100 experts: each server must keep the top experts of ~7-8
+    # anchored subtasks active (Top-3 union ~260 MB on average, ~335 MB p90),
+    # while one server stores ~210-420 MB of experts in total.
+    server_gpu_memory_range: tuple[float, float] = (300.0, 380.0)  # previously (100.0, 130.0)
     # Paper: [10, 100] MB/s = [80, 800] Mbit/s.
     wired_rate_range: tuple[float, float] = (80e6, 800e6)
     wired_extra_link_probability: float = 0.05
@@ -128,19 +187,16 @@ class ExperimentConfig:
         16.0 * 1024.0 * 8.0,
     )
     # Paper PSDs, converted from dBm/Hz to W/Hz.
-    noise_power: float = 10.0 ** ((-174.0 - 30.0) / 10.0)
+    noise_power: float = NOISE_PSD_W_PER_HZ
     common_power_ratio: float = 0.6
     # Kept under the existing field name for compatibility; interpreted as PSD.
-    max_device_power: float = 10.0 ** ((1.0 - 30.0) / 10.0)
+    max_device_power: float = TX_PSD_W_PER_HZ
     max_group_size: int = 4
     min_rate: float = 0.4e6
 
     # Objective unit costs from the simulation setup.
-    c_bw: float = 0.000025
-    c_act: float = 0.6
+    c_bw: float = 0.0000038
+    c_act: float = 0.3
     c_fwd: float = 1.0
-    c_inf: float = 0.06
-
-
-
-
+    # Cost per MFLOP-equivalent expert complexity (parameter_count / 1e6).
+    c_inf: float = 0.12

@@ -1,4 +1,4 @@
-"""JRGEP: similarity-aware expert selection, IoT grouping, and backhaul repair."""
+"""JRGEP pipeline: SCOPE placement, CFRG grouping, and Phase-III refinement."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from our_alg.phase_1 import Phase1ServerExpertSelectionMixin  # noqa: E402
 from our_alg.phase_2 import Phase2GroupingBackhaulMixin  # noqa: E402
 from our_alg.phase_3 import Phase3RefinementPruningMixin  # noqa: E402
 from rsma_integration import build_scheduler_inputs  # noqa: E402
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
 from utils.formulation import FormulationConfig, FormulationEvaluator, SubtaskSpec, TaskSpec  # noqa: E402
 
 SimilarityKey = Tuple[str, str]
@@ -55,8 +56,16 @@ class SimilarityAwareTopKBackhaulPipeline(
         config: Optional[FormulationConfig] = None,
         placement_random_seed: Optional[int] = None,
     ):
+        server_items = list(servers.values()) if isinstance(servers, Mapping) else list(servers)
+        self.physical_wired_links: tuple[dict[str, Any], ...] = tuple()
+        for raw_server in server_items:
+            server_data = raw_server if isinstance(raw_server, Mapping) else vars(raw_server)
+            links = server_data.get("physical_wired_links", ())
+            if links:
+                self.physical_wired_links = tuple(dict(link) for link in links)
+                break
         super().__init__(
-            servers=servers,
+            servers=server_items,
             devices=devices,
             experts=experts,
             tasks=tasks,
@@ -71,25 +80,25 @@ class SimilarityAwareTopKBackhaulPipeline(
         self.server_spread_penalty_multiplier = float(server_spread_penalty_multiplier)
         self.predecessor_penalty_multiplier = float(predecessor_penalty_multiplier)
         self.phase1_report: dict[str, Any] = {
-            "mode": "similarity_cluster_marginal_cost_selection",
+            "mode": "SCOPE",
             "similarity_pairs": len(self.r_sim),
             "similarity_weight": self.similarity_weight,
+            "similarity_smoothing_applied": False,
             "server_spread_penalty_multiplier": self.server_spread_penalty_multiplier,
             "predecessor_penalty_multiplier": self.predecessor_penalty_multiplier,
         }
-        self.phase2_report: dict[str, Any] = {"mode": "minimum_cost_group_repair"}
+        self.phase2_report: dict[str, Any] = {"mode": "CFRG"}
         self.phase3_report: dict[str, Any] = {
-            "mode": "assignment_refinement",
-            "max_iterations": 0,
-            "max_candidates_per_strategy": 6,
-            "bandwidth_increase_tolerance": 0.0,
+            "mode": "FAR",
+            "max_iterations": 2,
+            "max_joint_assignments": 32,
+            "max_private_candidates": 48,
+            "physical_link_count": len(self.physical_wired_links),
         }
         self.post_pruning_report: dict[str, Any] = {
             "enabled": self.enable_offline_group_pruning,
             "mode": "offline_final_group_pruning",
         }
-        if self.r_sim and self.similarity_weight > 0.0:
-            self._apply_similarity_smoothing()
 
     def run(self) -> ChainedPipelineResult:
         assignments, selected_probability, selected_experts, activated, used_memory = self._assign_topk_experts()
@@ -206,6 +215,12 @@ def run_similarity_aware_topk_backhaul(
     num_experts: int,
     num_iot_features: int,
     expert_memory_range: tuple[float, float] | None = None,
+    expert_memory_sizes_mb: Sequence[float] | None = None,
+    expert_inference_times_ms: Sequence[float] | None = None,
+    expert_hidden_dimensions: Sequence[int] | None = None,
+    expert_parameter_counts: Sequence[int] | None = None,
+    inference_unit_cost_per_mb: float = 0.06,
+    reasoning_data_sizes_bytes: Sequence[int] = (512,),
     feature_bits_range: tuple[float, float] | None = None,
     top_k: int = 2,
     num_servers: int = 9,
@@ -214,18 +229,20 @@ def run_similarity_aware_topk_backhaul(
     server_feature_overlap_ratio: float = 0.25,
     global_random_feature_fraction: float = 0.15,
     experts_per_server: int = 4,
+    server_processing_rate: float = 300e6,
     server_gpu_memory: float = 8192.0,
     server_gpu_memory_range: tuple[float, float] | None = None,
     wired_rate_range: tuple[float, float] | None = None,
     wired_extra_link_probability: float = 0.05,
+    wired_edge_weight_range: tuple[float, float] = (1.0, 3.0),
     c_bw: float = 1e-3,
     c_act: float = 1.0,
     c_fwd: float = 1.0,
     default_feature_bits: float = 12000.0,
     wavelength: float = 0.125,
-    noise_power: float = 1e-18,
+    noise_power: float = NOISE_PSD_W_PER_HZ,
     common_power_ratio: float = 0.6,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,
@@ -252,6 +269,12 @@ def run_similarity_aware_topk_backhaul(
         num_experts=num_experts,
         num_iot_features=num_iot_features,
         expert_memory_range=expert_memory_range,
+        expert_memory_sizes_mb=expert_memory_sizes_mb,
+        expert_inference_times_ms=expert_inference_times_ms,
+        expert_hidden_dimensions=expert_hidden_dimensions,
+        expert_parameter_counts=expert_parameter_counts,
+        inference_unit_cost_per_mb=inference_unit_cost_per_mb,
+        reasoning_data_sizes_bytes=reasoning_data_sizes_bytes,
         feature_bits_range=feature_bits_range,
         num_servers=num_servers,
         num_iot_devices=num_iot_devices,
@@ -259,10 +282,12 @@ def run_similarity_aware_topk_backhaul(
         server_feature_overlap_ratio=server_feature_overlap_ratio,
         global_random_feature_fraction=global_random_feature_fraction,
         experts_per_server=experts_per_server,
+        server_processing_rate=server_processing_rate,
         server_gpu_memory=server_gpu_memory,
         server_gpu_memory_range=server_gpu_memory_range,
         wired_rate_range=wired_rate_range,
         wired_extra_link_probability=wired_extra_link_probability,
+        wired_edge_weight_range=wired_edge_weight_range,
         default_feature_bits=default_feature_bits,
         max_device_power=max_device_power,
         area_size=area_size,
@@ -290,6 +315,7 @@ def run_similarity_aware_topk_backhaul(
             c_bw=c_bw,
             c_act=c_act,
             c_fwd=c_fwd,
+            c_inf=inference_unit_cost_per_mb,
             derive_bandwidth=True,
             noise_power=noise_power,
             common_power_ratio=common_power_ratio,
@@ -314,16 +340,26 @@ def run_similarity_aware_topk_backhaul(
             "num_iot_devices": num_iot_devices,
             "features_per_device_range": features_per_device_range,
             "expert_memory_range": expert_memory_range,
+            "expert_memory_sizes_mb": list(expert_memory_sizes_mb) if expert_memory_sizes_mb is not None else None,
+            "expert_hidden_dimensions": list(expert_hidden_dimensions) if expert_hidden_dimensions is not None else None,
+            "expert_parameter_counts": list(expert_parameter_counts) if expert_parameter_counts is not None else None,
+            "server_processing_rate": server_processing_rate,
+            "reasoning_data_sizes_bytes": list(reasoning_data_sizes_bytes),
             "experts_per_server": experts_per_server,
             "server_gpu_memory_range": server_gpu_memory_range,
             "wired_rate_range": wired_rate_range,
             "wired_extra_link_probability": wired_extra_link_probability,
+            "wired_edge_weight_range": wired_edge_weight_range,
             "bandwidth_mode": "pdf_equivalent_bandwidth_demand_by_group_slack",
             "feature_bits_range": feature_bits_range,
             "wavelength": wavelength,
             "noise_power": noise_power,
+            "noise_power_unit": "W/Hz",
             "common_power_ratio": common_power_ratio,
             "max_device_power": max_device_power,
+            "max_device_power_unit": "W/Hz",
+            "rate_model": "Shannon (linear SINR)",
+            "spectral_efficiency_unit": "bit/s/Hz",
             "area_size": area_size,
             "cell_radius": cell_radius,
             "num_antennas": num_antennas,
@@ -333,7 +369,12 @@ def run_similarity_aware_topk_backhaul(
     payload = hybrid_result_to_jsonable(
         result,
         network_context,
-        cost_units={"activation": c_act, "bandwidth": c_bw, "forwarding": c_fwd, "inference": 1.0},
+        cost_units={
+            "activation": c_act,
+            "bandwidth": c_bw,
+            "forwarding": c_fwd,
+            "inference": inference_unit_cost_per_mb,
+        },
     )
     payload["method"] = "jrgep"
     payload["algorithm_reports"] = {
@@ -346,6 +387,3 @@ def run_similarity_aware_topk_backhaul(
     with output_path.open("w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
     return result
-
-
-

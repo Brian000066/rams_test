@@ -6,6 +6,8 @@ import math
 import random
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from physical_layer import TX_PSD_W_PER_HZ
+from expert_deployment import build_expert_deployment, normalize_experts_per_server
 
 import networkx as nx
 
@@ -94,6 +96,9 @@ def node_to_subtask(
     node: Mapping[str, Any],
     predecessors: Sequence[str],
     loss_threshold: float | None,
+    reasoning_data_sizes_bytes: Sequence[int] = (512,),
+    default_feature_bits: float = 12000.0,
+    rng: random.Random | None = None,
 ) -> dict[str, Any]:
     required_data = node.get("required_data", {})
     iot_features = required_data.get("iot_features", [])
@@ -104,14 +109,24 @@ def node_to_subtask(
         feature_name(feature): float(error)
         for feature, error in zip(iot_features, reconstruction_errors)
     }
+    reasoning_sizes = tuple(int(size) for size in reasoning_data_sizes_bytes)
+    if not reasoning_sizes or any(size <= 0 for size in reasoning_sizes):
+        raise ValueError("reasoning_data_sizes_bytes must contain positive values.")
+    rng = rng or random.Random()
+    reasoning_data_size_bytes = int(
+        node.get("reasoning_data_size_bytes", rng.choice(reasoning_sizes))
+    )
+    # The setup uses BF16 outputs (16 bits = 2 bytes per token).
+    output_tokens = math.ceil(reasoning_data_size_bytes / 2.0)
 
     return {
         "id": str(node_id),
         "unique_id": str(node.get("unique_subtask_id", node_id)),
         "required_features": [feature_name(index) for index in iot_features],
         "predecessors": [str(item) for item in predecessors],
-        "output_tokens": 256,
-        "feature_volume_bits": 8_000.0 * max(len(iot_features), 1),
+        "output_tokens": output_tokens,
+        "reasoning_data_size_bytes": reasoning_data_size_bytes,
+        "feature_volume_bits": float(default_feature_bits) * max(len(iot_features), 1),
         "loss_threshold": loss_threshold,
         "prompt": node.get("prompt", ""),
         "gating_weights": gating_weights,
@@ -125,6 +140,9 @@ def node_to_subtask(
 def graphs_to_tasks(
     graphs: Iterable[nx.DiGraph],
     loss_threshold: float | None,
+    reasoning_data_sizes_bytes: Sequence[int] = (512,),
+    default_feature_bits: float = 12000.0,
+    rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
     """Convert generated DAG objects into JRGEP scheduler task specs."""
     tasks: list[dict[str, Any]] = []
@@ -151,6 +169,9 @@ def graphs_to_tasks(
                     node,
                     predecessors,
                     loss_threshold,
+                    reasoning_data_sizes_bytes=reasoning_data_sizes_bytes,
+                    default_feature_bits=default_feature_bits,
+                    rng=rng,
                 )
             )
 
@@ -236,6 +257,11 @@ def normalize_float_range(
 def build_simple_experts(
     num_experts: int,
     memory_range: tuple[float, float] | None = None,
+    memory_sizes_mb: Sequence[float] | None = None,
+    inference_times_ms: Sequence[float] | None = None,
+    hidden_dimensions: Sequence[int] | None = None,
+    parameter_counts: Sequence[int] | None = None,
+    inference_unit_cost_per_mb: float = 0.06,
     rng: random.Random | None = None,
 ) -> dict[str, dict[str, float | int]]:
     """Create indexed experts with heterogeneous model sizes."""
@@ -243,16 +269,68 @@ def build_simple_experts(
         raise ValueError("num_experts must be at least 1.")
 
     rng = rng or random.Random()
-    memory_min, memory_max = normalize_float_range(memory_range, (256.0, 256.0), "expert_memory_range")
+    memory_values: tuple[float, ...] | None = None
+    if memory_sizes_mb is not None:
+        memory_values = tuple(float(value) for value in memory_sizes_mb)
+        if len(memory_values) != num_experts:
+            raise ValueError("expert_memory_sizes_mb length must match num_experts.")
+        if any(value <= 0.0 for value in memory_values):
+            raise ValueError("expert_memory_sizes_mb values must be positive.")
+        memory_min = memory_max = 0.0
+    else:
+        memory_min, memory_max = normalize_float_range(
+            memory_range,
+            (256.0, 256.0),
+            "expert_memory_range",
+        )
+    if inference_times_ms is not None and len(inference_times_ms) != num_experts:
+        raise ValueError("expert_inference_times_ms length must match num_experts.")
+    if inference_times_ms is not None and any(value <= 0.0 for value in inference_times_ms):
+        raise ValueError("expert_inference_times_ms values must be positive.")
+    if hidden_dimensions is not None and len(hidden_dimensions) != num_experts:
+        raise ValueError("expert_hidden_dimensions length must match num_experts.")
+    if hidden_dimensions is not None and any(value <= 0 for value in hidden_dimensions):
+        raise ValueError("expert_hidden_dimensions values must be positive.")
+    if parameter_counts is not None and len(parameter_counts) != num_experts:
+        raise ValueError("expert_parameter_counts length must match num_experts.")
+    if parameter_counts is not None and any(value <= 0 for value in parameter_counts):
+        raise ValueError("expert_parameter_counts values must be positive.")
+    if inference_unit_cost_per_mb < 0.0:
+        raise ValueError("inference unit cost cannot be negative.")
 
     experts: dict[str, dict[str, float | int]] = {}
     for index in range(num_experts):
-        memory = memory_min if memory_min == memory_max else rng.uniform(memory_min, memory_max)
+        memory = (
+            memory_values[index]
+            if memory_values is not None
+            else (
+                memory_min
+                if memory_min == memory_max
+                else rng.uniform(memory_min, memory_max)
+            )
+        )
+        # Keep the public argument name for backward compatibility.  Under the
+        # ICC27 formulation it is interpreted as the unit cost per one million
+        # computational-complexity units, rather than a cost per MB.
+        complexity_mflop_equivalent = (
+            float(parameter_counts[index]) / 1_000_000.0
+            if parameter_counts is not None
+            else memory
+        )
         experts[expert_id(index)] = {
             "index": index,
+            "hidden_dimension": int(hidden_dimensions[index]) if hidden_dimensions is not None else 0,
+            "parameter_count": int(parameter_counts[index]) if parameter_counts is not None else 0,
             "memory": memory,
-            "latency": 0.05 + index * 0.01,
-            "inference_cost": memory * 0.01,
+            "latency": (
+                float(inference_times_ms[index]) / 1000.0
+                if inference_times_ms is not None
+                else 0.05 + index * 0.01
+            ),
+            "inference_cost": (
+                complexity_mflop_equivalent
+                * float(inference_unit_cost_per_mb)
+            ),
         }
     return experts
 
@@ -264,24 +342,34 @@ def build_physical_wired_shortest_paths(
     rate_max: float,
     rng: random.Random,
     extra_link_probability: float = 0.25,
+    edge_weight_range: tuple[float, float] = (1.0, 3.0),
 ) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]], list[dict[str, Any]]]:
-    """Build a connected physical MEC graph and derive shortest-route rates.
+    """Build a connected physical MEC graph and derive minimum-cost routes.
 
     The logical wired connection between any two servers follows the
-    predetermined shortest physical route. The route weight is its hop count,
-    and the effective end-to-end rate is the bottleneck rate along that route.
+    physical route with the smallest sum of edge weights. The effective
+    end-to-end rate is the bottleneck rate along that selected route.
     """
     if num_servers < 1:
         return {}, {}, []
 
-    links: dict[tuple[int, int], float] = {}
+    weight_min, weight_max = edge_weight_range
+    if weight_min <= 0.0 or weight_max <= 0.0:
+        raise ValueError("wired edge weights must be positive.")
+    if weight_min > weight_max:
+        weight_min, weight_max = weight_max, weight_min
+
+    links: dict[tuple[int, int], tuple[float, float]] = {}
 
     def add_link(left: int, right: int) -> None:
         if left == right:
             return
         key = (min(left, right), max(left, right))
         if key not in links:
-            links[key] = rng.uniform(rate_min, rate_max)
+            links[key] = (
+                rng.uniform(rate_min, rate_max),
+                rng.uniform(weight_min, weight_max),
+            )
 
     if num_servers == 1:
         return {0: {}}, {0: {}}, []
@@ -296,31 +384,48 @@ def build_physical_wired_shortest_paths(
             if rng.random() < extra_link_probability:
                 add_link(left, right)
 
+    route_cost = [[math.inf for _ in range(num_servers)] for _ in range(num_servers)]
     hops = [[math.inf for _ in range(num_servers)] for _ in range(num_servers)]
     bottleneck = [[0.0 for _ in range(num_servers)] for _ in range(num_servers)]
     for index in range(num_servers):
+        route_cost[index][index] = 0.0
         hops[index][index] = 0
         bottleneck[index][index] = math.inf
-    for (left, right), rate in links.items():
+    for (left, right), (rate, edge_weight) in links.items():
+        route_cost[left][right] = route_cost[right][left] = edge_weight
         hops[left][right] = hops[right][left] = 1
         bottleneck[left][right] = bottleneck[right][left] = rate
 
     for mid in range(num_servers):
         for src in range(num_servers):
-            if hops[src][mid] == math.inf:
+            if route_cost[src][mid] == math.inf:
                 continue
             for dst in range(num_servers):
-                if hops[mid][dst] == math.inf:
+                if route_cost[mid][dst] == math.inf:
                     continue
+                candidate_cost = route_cost[src][mid] + route_cost[mid][dst]
                 candidate_hops = hops[src][mid] + hops[mid][dst]
                 candidate_rate = min(bottleneck[src][mid], bottleneck[mid][dst])
+                cost_tied = math.isclose(
+                    candidate_cost,
+                    route_cost[src][dst],
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                )
                 if (
-                    candidate_hops < hops[src][dst]
+                    candidate_cost < route_cost[src][dst] - 1e-12
                     or (
-                        candidate_hops == hops[src][dst]
-                        and candidate_rate > bottleneck[src][dst]
+                        cost_tied
+                        and (
+                            candidate_rate > bottleneck[src][dst]
+                            or (
+                                math.isclose(candidate_rate, bottleneck[src][dst])
+                                and candidate_hops < hops[src][dst]
+                            )
+                        )
                     )
                 ):
+                    route_cost[src][dst] = candidate_cost
                     hops[src][dst] = candidate_hops
                     bottleneck[src][dst] = candidate_rate
 
@@ -331,77 +436,90 @@ def build_physical_wired_shortest_paths(
             if src == dst:
                 continue
             wired_rates[src][dst] = bottleneck[src][dst] if bottleneck[src][dst] > 0.0 else rate_min
-            wired_weights[src][dst] = float(hops[src][dst] if hops[src][dst] != math.inf else num_servers)
+            wired_weights[src][dst] = float(
+                route_cost[src][dst]
+                if route_cost[src][dst] != math.inf
+                else num_servers * weight_max
+            )
 
     link_list = [
-        {"src": f"server_{left}", "dst": f"server_{right}", "rate": rate}
-        for (left, right), rate in sorted(links.items())
+        {
+            "src": f"server_{left}",
+            "dst": f"server_{right}",
+            "rate": rate,
+            "weight": edge_weight,
+        }
+        for (left, right), (rate, edge_weight) in sorted(links.items())
     ]
     return wired_rates, wired_weights, link_list
+
+_PROCESSING_RATE_SALT = 0x9C0DE5
+
+
+def server_processing_rate_for(
+    server_index: int,
+    processing_rate: float | Sequence[float],
+    seed: int,
+) -> float:
+    """Processing rate mu_s of one server (parameters per second).
+
+    A single number gives every server the same rate.  A (min, max) range
+    gives server k its own rate ~ U[min, max], drawn from a dedicated RNG
+    keyed by (seed, k): it does not consume the shared network RNG, and
+    server k gets the same rate for every server count (nested Fig. 3).
+    """
+    if isinstance(processing_rate, (int, float)):
+        rate = float(processing_rate)
+    else:
+        low, high = (float(value) for value in processing_rate)
+        if low > high:
+            low, high = high, low
+        rate = low if low == high else random.Random(
+            (int(seed) * 1_000_003 + int(server_index) * 104_729) ^ _PROCESSING_RATE_SALT
+        ).uniform(low, high)
+    if rate <= 0.0:
+        raise ValueError("server processing_rate must be positive.")
+    return rate
+
 
 def build_simple_servers(
     num_servers: int,
     experts: Mapping[str, Mapping[str, Any]],
-    experts_per_server: int,
+    experts_per_server: int | Sequence[int],
+    processing_rate: float | Sequence[float] = 300e6,
     gpu_memory: float = 8192.0,
     gpu_memory_range: tuple[float, float] | None = None,
     wired_rate_range: tuple[float, float] | None = None,
     wired_extra_link_probability: float = 0.05,
+    wired_edge_weight_range: tuple[float, float] = (1.0, 3.0),
     rng: random.Random | None = None,
+    deployment_seed: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Create edge servers with balanced expert replicas and random wired links."""
+    """Create edge servers with the shared expert deployment and random wired links.
+
+    The stored-expert sets come from expert_deployment.build_expert_deployment
+    with ``deployment_seed`` so that DAG generation (gating anchors), every
+    scheduler and the network export all see the same deployment.
+    """
     if num_servers < 1:
         raise ValueError("num_servers must be at least 1.")
-    if experts_per_server < 1:
-        raise ValueError("experts_per_server must be at least 1.")
-
     rng = rng or random.Random()
     expert_ids = sorted(experts, key=lambda item: int(item.rsplit("_", 1)[1]))
     if not expert_ids:
         raise ValueError("at least one expert is required.")
+    if deployment_seed is None:
+        deployment_seed = rng.randint(1, 2_147_483_647)
 
-    experts_per_server = min(experts_per_server, len(expert_ids))
-    total_slots = num_servers * experts_per_server
-    experts_by_server: list[list[str]] = [[] for _ in range(num_servers)]
-    replica_count = {expert_id_value: 0 for expert_id_value in expert_ids}
-
-    def server_has_room(server_index: int) -> bool:
-        return len(experts_by_server[server_index]) < experts_per_server
-
-    def place_expert(server_index: int, expert_id_value: str) -> None:
-        experts_by_server[server_index].append(expert_id_value)
-        replica_count[expert_id_value] += 1
-
-    # First pass: keep as many experts available as possible. If there are
-    # enough slots, every expert gets one copy before replicas are added.
-    for expert_offset, stored_expert_id in enumerate(expert_ids[:total_slots]):
-        start_server = expert_offset % num_servers
-        for hop in range(num_servers):
-            server_index = (start_server + hop) % num_servers
-            if server_has_room(server_index) and stored_expert_id not in experts_by_server[server_index]:
-                place_expert(server_index, stored_expert_id)
-                break
-
-    # Second pass: fill remaining slots with random replicas. A server cannot
-    # store the same expert twice, but the same expert may appear on different servers.
-    max_replicas_per_expert = max(1, math.ceil(total_slots / len(expert_ids)) + 1)
-    for server_index in rng.sample(range(num_servers), num_servers):
-        while server_has_room(server_index):
-            candidates = [
-                expert_id_value
-                for expert_id_value in expert_ids
-                if expert_id_value not in experts_by_server[server_index]
-                and replica_count[expert_id_value] < max_replicas_per_expert
-            ]
-            if not candidates:
-                candidates = [
-                    expert_id_value
-                    for expert_id_value in expert_ids
-                    if expert_id_value not in experts_by_server[server_index]
-                ]
-            if not candidates:
-                break
-            place_expert(server_index, rng.choice(candidates))
+    deployment = build_expert_deployment(
+        num_experts=len(expert_ids),
+        num_servers=num_servers,
+        experts_per_server=experts_per_server,
+        seed=deployment_seed,
+    )
+    experts_by_server: list[list[str]] = [
+        [expert_ids[index] for index in server_experts]
+        for server_experts in deployment
+    ]
 
     gpu_min, gpu_max = normalize_float_range(gpu_memory_range, (gpu_memory, gpu_memory), "server_gpu_memory_range")
     rate_min, rate_max = wired_rate_range or (1e9, 1e9)
@@ -416,6 +534,7 @@ def build_simple_servers(
         rate_max,
         rng,
         extra_link_probability=wired_extra_link_probability,
+        edge_weight_range=wired_edge_weight_range,
     )
 
     servers: list[dict[str, Any]] = []
@@ -424,6 +543,7 @@ def build_simple_servers(
         servers.append(
             {
                 "id": f"server_{server_index}",
+                "processing_rate": server_processing_rate_for(server_index, processing_rate, deployment_seed),
                 "gpu_memory": server_gpu_memory,
                 "stored_experts": stored,
                 "active_experts": [],
@@ -441,6 +561,268 @@ def build_simple_servers(
             }
         )
     return servers
+
+
+# Nested server design (Fig. 3).  When set to an int, build_scheduler_inputs
+# builds the network for this many base servers once and then only *adds*
+# servers: base servers, IoTs, channels to base servers, expert storage and
+# wired links stay identical for every larger server count.
+NESTED_SERVER_BASE: int | None = None
+NESTED_LINKS_PER_NEW_SERVER = 3
+# "mirror_nearest": a new server stores the same experts as the nearest base
+# server (an edge replica); "least_replicated": least-replicated experts.
+NESTED_NEW_SERVER_EXPERTS = "mirror_nearest"
+_NESTED_SALT = 0x2E57ED
+
+
+def build_balanced_server_positions(num_servers: int, area_size: float) -> list[tuple[float, float]]:
+    """round(sqrt(n)) rows, servers split evenly over rows, evenly spaced in a row."""
+    rows = max(1, round(math.sqrt(num_servers)))
+    base, extra = divmod(num_servers, rows)
+    positions: list[tuple[float, float]] = []
+    for row in range(rows):
+        count = base + (1 if row < extra else 0)
+        y = (row + 0.5) * area_size / rows
+        for col in range(count):
+            positions.append(((col + 0.5) * area_size / count, y))
+    return positions
+
+
+def build_nested_server_positions(
+    num_servers: int,
+    base_servers: int,
+    area_size: float,
+    grid: int = 50,
+) -> list[tuple[float, float]]:
+    """Balanced base layout, then each new server at the inner grid point farthest from all existing ones."""
+    positions = build_balanced_server_positions(min(num_servers, base_servers), area_size)
+    # Candidates cover the inner 80% of the area so new servers are not put on the border.
+    candidates = [
+        (area_size * (0.1 + 0.8 * (i + 0.5) / grid), area_size * (0.1 + 0.8 * (j + 0.5) / grid))
+        for i in range(grid)
+        for j in range(grid)
+    ]
+    while len(positions) < num_servers:
+        positions.append(
+            max(candidates, key=lambda point: (min(math.dist(point, q) for q in positions), -point[0], -point[1]))
+        )
+    return positions
+
+
+def _routes_from_links(
+    num_servers: int,
+    links: Mapping[tuple[int, int], tuple[float, float]],
+    weight_max: float,
+    rate_min: float,
+) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]]]:
+    """Minimum-cost routes (same rule as build_physical_wired_shortest_paths)."""
+    route_cost = [[math.inf] * num_servers for _ in range(num_servers)]
+    hops = [[math.inf] * num_servers for _ in range(num_servers)]
+    bottleneck = [[0.0] * num_servers for _ in range(num_servers)]
+    for index in range(num_servers):
+        route_cost[index][index] = 0.0
+        hops[index][index] = 0
+        bottleneck[index][index] = math.inf
+    for (left, right), (rate, edge_weight) in links.items():
+        route_cost[left][right] = route_cost[right][left] = edge_weight
+        hops[left][right] = hops[right][left] = 1
+        bottleneck[left][right] = bottleneck[right][left] = rate
+    for mid in range(num_servers):
+        for src in range(num_servers):
+            if route_cost[src][mid] == math.inf:
+                continue
+            for dst in range(num_servers):
+                if route_cost[mid][dst] == math.inf:
+                    continue
+                candidate_cost = route_cost[src][mid] + route_cost[mid][dst]
+                candidate_hops = hops[src][mid] + hops[mid][dst]
+                candidate_rate = min(bottleneck[src][mid], bottleneck[mid][dst])
+                cost_tied = math.isclose(candidate_cost, route_cost[src][dst], rel_tol=1e-12, abs_tol=1e-12)
+                if (
+                    candidate_cost < route_cost[src][dst] - 1e-12
+                    or (
+                        cost_tied
+                        and (
+                            candidate_rate > bottleneck[src][dst]
+                            or (
+                                math.isclose(candidate_rate, bottleneck[src][dst])
+                                and candidate_hops < hops[src][dst]
+                            )
+                        )
+                    )
+                ):
+                    route_cost[src][dst] = candidate_cost
+                    hops[src][dst] = candidate_hops
+                    bottleneck[src][dst] = candidate_rate
+    wired_rates: dict[int, dict[int, float]] = {index: {} for index in range(num_servers)}
+    wired_weights: dict[int, dict[int, float]] = {index: {} for index in range(num_servers)}
+    for src in range(num_servers):
+        for dst in range(num_servers):
+            if src == dst:
+                continue
+            wired_rates[src][dst] = bottleneck[src][dst] if bottleneck[src][dst] > 0.0 else rate_min
+            wired_weights[src][dst] = float(
+                route_cost[src][dst] if route_cost[src][dst] != math.inf else num_servers * weight_max
+            )
+    return wired_rates, wired_weights
+
+
+def _build_nested_scheduler_inputs(
+    *,
+    tasks,
+    feature_bits_by_name,
+    experts,
+    rng: random.Random,
+    base_servers: int,
+    num_servers: int,
+    num_iot_features: int,
+    num_iot_devices: int,
+    features_per_device_range: tuple[int, int],
+    server_feature_overlap_ratio: float,
+    global_random_feature_fraction: float,
+    experts_per_server,
+    server_processing_rate: float,
+    server_gpu_memory: float,
+    server_gpu_memory_range,
+    wired_rate_range,
+    wired_extra_link_probability: float,
+    wired_edge_weight_range: tuple[float, float],
+    max_device_power: float,
+    area_size: float,
+    cell_radius: float,
+    num_antennas: int,
+    random_seed: int,
+) -> "SchedulerInputs":
+    """Base network for `base_servers` servers, then add servers one by one.
+
+    Server k (k >= base_servers) only depends on the seed, k and servers
+    0..k-1, so the network for n servers is a superset of the one for any
+    smaller n.  New servers: farthest-point position, expert replicas
+    (least-replicated experts first), GPU and links to the
+    NESTED_LINKS_PER_NEW_SERVER nearest existing servers, all from their own
+    RNG.  IoTs keep their positions, features and channels to existing
+    servers; IoTs within cell_radius of a new server gain one more reachable
+    server with a newly drawn channel.
+    """
+    base_servers = max(1, int(base_servers))
+    positions = build_nested_server_positions(max(num_servers, base_servers), base_servers, area_size)
+    base_count = min(num_servers, base_servers)
+    servers = build_simple_servers(
+        num_servers=base_count,
+        experts=experts,
+        experts_per_server=experts_per_server,
+        processing_rate=server_processing_rate,
+        gpu_memory=server_gpu_memory,
+        gpu_memory_range=server_gpu_memory_range,
+        wired_rate_range=wired_rate_range,
+        wired_extra_link_probability=wired_extra_link_probability,
+        wired_edge_weight_range=wired_edge_weight_range,
+        rng=rng,
+        deployment_seed=random_seed,
+    )
+    devices, topology = build_simple_devices(
+        num_iot_features=num_iot_features,
+        num_iot_devices=num_iot_devices,
+        num_servers=base_count,
+        features_per_device_range=features_per_device_range,
+        server_feature_overlap_ratio=server_feature_overlap_ratio,
+        global_random_feature_fraction=global_random_feature_fraction,
+        area_size=area_size,
+        cell_radius=cell_radius,
+        num_antennas=num_antennas,
+        rng=rng,
+        max_power=max_device_power,
+        server_positions=positions[:base_count],
+    )
+    if num_servers > base_count:
+        expert_ids = sorted(experts, key=lambda item: int(item.rsplit("_", 1)[1]))
+        low, high = normalize_experts_per_server(experts_per_server)
+        high = min(high, len(expert_ids))
+        low = min(low, high)
+        gpu_min, gpu_max = normalize_float_range(
+            server_gpu_memory_range, (server_gpu_memory, server_gpu_memory), "server_gpu_memory_range"
+        )
+        rate_min, rate_max = wired_rate_range or (1e9, 1e9)
+        weight_min, weight_max = wired_edge_weight_range
+        links: dict[tuple[int, int], tuple[float, float]] = {}
+        for item in servers[0].get("physical_wired_links", []):
+            left = int(str(item["src"]).rsplit("_", 1)[1])
+            right = int(str(item["dst"]).rsplit("_", 1)[1])
+            links[(min(left, right), max(left, right))] = (float(item["rate"]), float(item["weight"]))
+        replica = {expert: 0 for expert in expert_ids}
+        for server in servers:
+            for expert in server["stored_experts"]:
+                replica[expert] += 1
+        for k in range(base_count, num_servers):
+            krng = random.Random((int(random_seed) * 1_000_003 + k * 7_919) ^ _NESTED_SALT)
+            slots = krng.randint(low, high)
+            stored: list[str] = []
+            if NESTED_NEW_SERVER_EXPERTS == "mirror_nearest":
+                mirror = min(range(base_count), key=lambda j: (math.dist(positions[k], positions[j]), j))
+                stored = list(servers[mirror]["stored_experts"])
+                for expert in stored:
+                    replica[expert] += 1
+            while NESTED_NEW_SERVER_EXPERTS != "mirror_nearest" and len(stored) < slots:
+                candidates = [e for e in expert_ids if e not in stored]
+                minimum = min(replica[e] for e in candidates)
+                choice = krng.choice([e for e in candidates if replica[e] == minimum])
+                stored.append(choice)
+                replica[choice] += 1
+            stored.sort(key=lambda item: int(item.rsplit("_", 1)[1]))
+            gpu = gpu_min if gpu_min == gpu_max else krng.uniform(gpu_min, gpu_max)
+            nearest = sorted(range(k), key=lambda j: (math.dist(positions[k], positions[j]), j))
+            for j in nearest[:NESTED_LINKS_PER_NEW_SERVER]:
+                links[(j, k)] = (krng.uniform(rate_min, rate_max), krng.uniform(weight_min, weight_max))
+            servers.append({
+                "id": f"server_{k}",
+                "processing_rate": server_processing_rate_for(k, server_processing_rate, random_seed),
+                "gpu_memory": gpu,
+                "stored_experts": stored,
+                "active_experts": [],
+                "wired_rates": {},
+                "wired_weights": {},
+                "physical_wired_links": [],
+            })
+            server_id = f"server_{k}"
+            newly_connected = []
+            for device in devices:
+                x, y = device["position"]
+                distance = math.dist((x, y), positions[k])
+                if distance > cell_radius:
+                    continue
+                link_distance = min(max(distance, 10.0), cell_radius)
+                vector, gain, phase = channel_from_distance(link_distance, num_antennas, krng)
+                device["connected_edge_server_ids"].append(server_id)
+                device["channel_gain"][server_id] = gain
+                device["channel_vector"][server_id] = vector_to_json(vector)
+                device["channel_phase"][server_id] = phase
+                device["phase_angle"][server_id] = geometric_angle((x, y), positions[k])
+                device["distance"][server_id] = round(float(link_distance), 6)
+                newly_connected.append(device)
+            for device in newly_connected:
+                device["spatial_correlation"][server_id] = {other["id"]: 1.0 for other in newly_connected}
+        wired_rates, wired_weights = _routes_from_links(num_servers, links, weight_max, rate_min)
+        link_list = [
+            {"src": f"server_{left}", "dst": f"server_{right}", "rate": rate, "weight": weight}
+            for (left, right), (rate, weight) in sorted(links.items())
+        ]
+        for index, server in enumerate(servers):
+            server["wired_rates"] = {f"server_{o}": wired_rates[index][o] for o in range(num_servers) if o != index}
+            server["wired_weights"] = {f"server_{o}": wired_weights[index][o] for o in range(num_servers) if o != index}
+            server["physical_wired_links"] = link_list
+        topology = dict(topology)
+        topology["server_positions"] = {
+            f"server_{index}": [round(x, 6), round(y, 6)] for index, (x, y) in enumerate(positions[:num_servers])
+        }
+        topology["nested_server_base"] = base_count
+    return SchedulerInputs(
+        tasks=tasks,
+        feature_bits_by_name=feature_bits_by_name,
+        experts=experts,
+        servers=servers,
+        devices=devices,
+        topology=topology,
+    )
 
 
 def build_server_positions(num_servers: int, area_size: float) -> list[tuple[float, float]]:
@@ -469,19 +851,22 @@ def channel_from_distance(
     num_antennas: int,
     rng: random.Random,
 ) -> tuple[list[complex], float, float]:
-    """SIoT-RSMA scalar channel gain for one IoT-server link.
+    """Return scalar channel amplitude and fading phase for one link.
 
-    The SIoT code draws link distances in [10, 300] m and computes
-    |h| = |small-scale fading| / (path loss * shadowing). We keep the server
-    antenna count as experiment metadata, but this channel model is scalar.
+    PL(d) = 50 + 15 log10(d) dB, with a 10 m reference-distance floor.
+    Shadowing is a power loss in dB; CN(0,1) fading has unit mean power.
+    num_antennas remains metadata: this is not a MIMO channel model.
     """
     del num_antennas
-    siot_distance = min(max(distance, 10.0), 300.0)
-    path_loss_db = 50.0 + 15.0 * math.log10(siot_distance)
-    loss = 10 ** (path_loss_db / 10.0)
-    shadowing = 10 ** (rng.gauss(0.0, 1.0) / 10.0)
-    small_scale_fading = complex(rng.gauss(0.0, 1.0), rng.gauss(0.0, 1.0))
-    channel_gain = abs(small_scale_fading) / (loss * shadowing)
+    if not math.isfinite(distance) or distance < 0.0:
+        raise ValueError("distance must be finite and non-negative.")
+    link_distance = max(distance, 10.0)
+    path_loss_db = 50.0 + 15.0 * math.log10(link_distance)
+    shadowing_db = rng.gauss(0.0, 1.0)
+    power_loss = 10.0 ** ((path_loss_db + shadowing_db) / 10.0)
+    fading_std = 1.0 / math.sqrt(2.0)
+    small_scale_fading = complex(rng.gauss(0.0, fading_std), rng.gauss(0.0, fading_std))
+    channel_gain = abs(small_scale_fading) / math.sqrt(power_loss)
     channel_phase = math.atan2(small_scale_fading.imag, small_scale_fading.real)
     return [], channel_gain, channel_phase
 
@@ -596,14 +981,44 @@ def spatial_feature_set(
     sector_count: int = 8,
     ring_count: int = 3,
 ) -> set[int]:
-    """Assign feature indexes from the home server's local feature pool."""
+    """Assign spatially correlated feature indexes to one IoT device.
+
+    Nearby IoTs observe largely the same area, so features are drawn first
+    from the device's sector pool (direction from its home server), then from
+    its ring pool (distance band), then from the home server pool.  A small
+    global_random_fraction of features is drawn from the whole feature set.
+    Adjacent sector/ring windows overlap, so neighbouring IoTs share most
+    features while distant IoTs share few.
+    """
     if feature_count <= 0:
         return set()
+    feature_count = min(feature_count, len(feature_pool))
+    sector_width = (2.0 * math.pi) / max(1, sector_count)
+    sector_index = int(home_angle // sector_width) % max(1, sector_count)
+    ring_index = min(
+        max(1, ring_count) - 1,
+        int(max(0.0, home_distance) / max(cell_radius, 1e-9) * max(1, ring_count)),
+    )
+    if feature_count > 1:
+        global_count = min(
+            feature_count - 1,
+            int(round(feature_count * max(0.0, global_random_fraction))),
+        )
+    else:
+        global_count = 0
+    local_target = feature_count - global_count
 
     features: set[int] = set()
-    fill_features_from_pool(features, server_feature_pools.get(home_server_index, []), feature_count, rng)
-    if len(features) < min(feature_count, len(feature_pool)):
-        fill_features_from_pool(features, feature_pool, feature_count, rng)
+    fill_features_from_pool(
+        features, sector_feature_pools.get((home_server_index, sector_index), []), local_target, rng
+    )
+    fill_features_from_pool(
+        features, ring_feature_pools.get((home_server_index, ring_index), []), local_target, rng
+    )
+    fill_features_from_pool(
+        features, server_feature_pools.get(home_server_index, []), local_target, rng
+    )
+    fill_features_from_pool(features, feature_pool, feature_count, rng)
     return set(sorted(features))
 
 
@@ -616,11 +1031,12 @@ def build_simple_devices(
     cell_radius: float,
     num_antennas: int,
     rng: random.Random,
-    max_power: float = 50.0,
+    max_power: float = TX_PSD_W_PER_HZ,
     server_feature_overlap_ratio: float = 0.25,
     global_random_feature_fraction: float = 0.15,
+    server_positions: Sequence[tuple[float, float]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Create IoT devices with multi-cell associations and original-like channels."""
+    """Create IoT devices with scalar amplitude channels and max_power in W/Hz."""
     if num_iot_features < 1:
         raise ValueError("num_iot_features must be at least 1.")
     if num_iot_devices < 1:
@@ -634,7 +1050,10 @@ def build_simple_devices(
         raise ValueError("features_per_device_range must be valid and positive.")
     max_features = min(max_features, num_iot_features)
 
-    server_positions = build_server_positions(num_servers, area_size)
+    if server_positions is None:
+        server_positions = build_server_positions(num_servers, area_size)
+    else:
+        server_positions = [tuple(position) for position in server_positions]
     devices: list[dict[str, Any]] = []
     association_map: list[dict[str, Any]] = []
     feature_pool = list(range(num_iot_features))
@@ -771,8 +1190,10 @@ def build_simple_devices(
         "area_size": area_size,
         "cell_radius": cell_radius,
         "num_antennas": num_antennas,
-        "channel_model": "siot_scalar_pathloss_shadowing_fading",
-        "distance_model": "geometry_based_link_distance_clamped_to_siot_10_300m",
+        "channel_model": "scalar_unit_power_fading_sqrt_power_loss",
+        "channel_gain_unit": "amplitude (squared for received power)",
+        "device_power_unit": "W/Hz",
+        "distance_model": "geometry_based_link_distance_with_10m_floor",
         "angle_model": "geometry_based_counterclockwise_from_server_horizontal_axis",
         "feature_model": "server_pool_position_correlated_with_global_randomness",
         "feature_model_parameters": {
@@ -812,19 +1233,27 @@ def build_scheduler_inputs(
     num_experts: int,
     num_iot_features: int,
     expert_memory_range: tuple[float, float] | None = None,
+    expert_memory_sizes_mb: Sequence[float] | None = None,
+    expert_inference_times_ms: Sequence[float] | None = None,
+    expert_hidden_dimensions: Sequence[int] | None = None,
+    expert_parameter_counts: Sequence[int] | None = None,
+    inference_unit_cost_per_mb: float = 0.06,
+    reasoning_data_sizes_bytes: Sequence[int] = (512,),
     feature_bits_range: tuple[float, float] | None = None,
     num_servers: int = 9,
     num_iot_devices: int = 100,
     features_per_device_range: tuple[int, int] = (5, 12),
     server_feature_overlap_ratio: float = 0.25,
     global_random_feature_fraction: float = 0.15,
-    experts_per_server: int = 4,
+    experts_per_server: int | Sequence[int] = 4,
+    server_processing_rate: float = 300e6,
     server_gpu_memory: float = 8192.0,
     server_gpu_memory_range: tuple[float, float] | None = None,
     wired_rate_range: tuple[float, float] | None = None,
     wired_extra_link_probability: float = 0.05,
+    wired_edge_weight_range: tuple[float, float] = (1.0, 3.0),
     default_feature_bits: float = 12000.0,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,
@@ -833,18 +1262,64 @@ def build_scheduler_inputs(
 ) -> SchedulerInputs:
     """Build the shared task/network objects used by all schedulers."""
     rng = random.Random(random_seed)
-    tasks = graphs_to_tasks(graphs, loss_threshold)
+    task_rng = random.Random(random_seed ^ 0x5EED5EED)
+    tasks = graphs_to_tasks(
+        graphs,
+        loss_threshold,
+        reasoning_data_sizes_bytes=reasoning_data_sizes_bytes,
+        default_feature_bits=default_feature_bits,
+        rng=task_rng,
+    )
     feature_bits_by_name = build_feature_bits(num_iot_features, default_feature_bits, feature_bits_range, rng)
-    experts = build_simple_experts(num_experts, memory_range=expert_memory_range, rng=rng)
+    experts = build_simple_experts(
+        num_experts,
+        memory_range=expert_memory_range,
+        memory_sizes_mb=expert_memory_sizes_mb,
+        inference_times_ms=expert_inference_times_ms,
+        hidden_dimensions=expert_hidden_dimensions,
+        parameter_counts=expert_parameter_counts,
+        inference_unit_cost_per_mb=inference_unit_cost_per_mb,
+        rng=rng,
+    )
+    nested_base = NESTED_SERVER_BASE
+    if nested_base is not None:
+        return _build_nested_scheduler_inputs(
+            tasks=tasks,
+            feature_bits_by_name=feature_bits_by_name,
+            experts=experts,
+            rng=rng,
+            base_servers=int(nested_base),
+            num_servers=num_servers,
+            num_iot_features=num_iot_features,
+            num_iot_devices=num_iot_devices,
+            features_per_device_range=features_per_device_range,
+            server_feature_overlap_ratio=server_feature_overlap_ratio,
+            global_random_feature_fraction=global_random_feature_fraction,
+            experts_per_server=experts_per_server,
+            server_processing_rate=server_processing_rate,
+            server_gpu_memory=server_gpu_memory,
+            server_gpu_memory_range=server_gpu_memory_range,
+            wired_rate_range=wired_rate_range,
+            wired_extra_link_probability=wired_extra_link_probability,
+            wired_edge_weight_range=wired_edge_weight_range,
+            max_device_power=max_device_power,
+            area_size=area_size,
+            cell_radius=cell_radius,
+            num_antennas=num_antennas,
+            random_seed=random_seed,
+        )
     servers = build_simple_servers(
         num_servers=num_servers,
         experts=experts,
         experts_per_server=experts_per_server,
+        processing_rate=server_processing_rate,
         gpu_memory=server_gpu_memory,
         gpu_memory_range=server_gpu_memory_range,
         wired_rate_range=wired_rate_range,
         wired_extra_link_probability=wired_extra_link_probability,
+        wired_edge_weight_range=wired_edge_weight_range,
         rng=rng,
+        deployment_seed=random_seed,
     )
     devices, topology = build_simple_devices(
         num_iot_features=num_iot_features,

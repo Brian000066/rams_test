@@ -13,6 +13,10 @@ from compared_method.WDMoE import run_wdmoe_location_aware, run_wdmoe_gssgd
 from our_alg import run_similarity_aware_topk_backhaul
 from config import ExperimentConfig
 from generate_dags import build_dag_specs, generate_multiple_dags
+from expert_deployment import build_expert_deployment
+import rsma_integration
+import expert_deployment
+from task_metadata import GatingSpec
 from rsma_integration import graphs_to_tasks
 from network_graph_export import export_network_graph_artifacts
 from utils.formulation import FormulationConfig, FormulationEvaluator, normalize_tasks
@@ -35,6 +39,7 @@ class AverageResult:
     activation_usage: float = 0.0
     bandwidth_usage: float = 0.0
     forwarding_usage: float = 0.0
+    inference_time_ms: float = 0.0
     avg_servers_per_subtask: float = 0.0
     avg_experts_per_subtask: float = 0.0
     violations: tuple[Any, ...] = ()
@@ -57,6 +62,43 @@ def resolve_run_seeds(config: ExperimentConfig, run_index: int = 0) -> RunSeeds:
     )
 
 
+def build_gating_spec(config: ExperimentConfig, seeds: RunSeeds) -> GatingSpec:
+    """Gating settings plus the expert deployment that the schedulers will use.
+
+    The deployment is rebuilt from seeds.network_seed exactly as in
+    rsma_integration.build_simple_servers, so each subtask's anchored top
+    experts are stored on a real server in every method.
+    """
+    # Nested server design: tasks (gating anchors) only see the base servers,
+    # so the same seed gives identical tasks for every server count.
+    deployment_servers = (
+        min(config.num_edge_servers, config.nested_server_base)
+        if config.nested_server_base is not None
+        else config.num_edge_servers
+    )
+    # Nested storage design: anchors come from the base deployment, which is
+    # contained in every larger one, so tasks are identical for every average.
+    expert_deployment.NESTED_STORAGE_BASE = config.nested_storage_base
+    deployment = build_expert_deployment(
+        num_experts=config.num_experts,
+        num_servers=deployment_servers,
+        experts_per_server=(
+            config.nested_storage_base
+            if config.nested_storage_base is not None
+            else config.experts_per_server
+        ),
+        seed=seeds.network_seed,
+    )
+    return GatingSpec(
+        num_candidates=config.gating_num_candidates,
+        anchor_count=config.gating_anchor_count,
+        secondary_anchor_count=config.gating_secondary_anchor_count,
+        score_range=config.gating_score_range,
+        temperature=config.gating_temperature,
+        stored_experts_by_server=tuple(tuple(server) for server in deployment),
+    )
+
+
 def generate_task_graphs(config: ExperimentConfig, seeds: RunSeeds, verbose: bool = True, export_artifacts: bool = True):
     specs = build_dag_specs(config.num_dags, config.common_dag_spec)
     graphs = generate_multiple_dags(
@@ -70,10 +112,12 @@ def generate_task_graphs(config: ExperimentConfig, seeds: RunSeeds, verbose: boo
         task_deadline_seconds_range=config.task_deadline_seconds_range,
         reconstruction_sigma=config.reconstruction_sigma,
         reconstruction_error_range=config.reconstruction_error_range,
-        gating_peak_count_range=config.gating_peak_count_range,
-        gating_peak_mass_range=config.gating_peak_mass_range,
+        gating_spec=build_gating_spec(config, seeds),
         num_calibration_samples=config.num_calibration_samples,
         calibration_loss_range=config.calibration_loss_range,
+        shared_subtask_ratio=config.shared_subtask_ratio,
+        shared_subtask_graph_count_range=config.shared_subtask_graph_count_range,
+        shared_subtask_kind_count=config.shared_subtask_kind_count,
         verbose=verbose,
         export_artifacts=export_artifacts,
     )
@@ -94,6 +138,12 @@ def common_scheduler_kwargs(config: ExperimentConfig, seeds: RunSeeds) -> dict[s
     return {
         "num_experts": config.num_experts,
         "expert_memory_range": config.expert_memory_range,
+        "expert_memory_sizes_mb": config.expert_memory_sizes_mb,
+        "expert_inference_times_ms": config.expert_inference_times_ms,
+        "expert_hidden_dimensions": config.expert_hidden_dimensions,
+        "expert_parameter_counts": config.expert_parameter_counts,
+        "inference_unit_cost_per_mb": config.c_inf,
+        "reasoning_data_sizes_bytes": config.reasoning_data_sizes_bytes,
         "num_iot_features": config.num_iot_features,
         "num_servers": config.num_edge_servers,
         "num_iot_devices": config.num_iot_devices,
@@ -101,12 +151,15 @@ def common_scheduler_kwargs(config: ExperimentConfig, seeds: RunSeeds) -> dict[s
         "server_feature_overlap_ratio": config.iot_server_feature_overlap_ratio,
         "global_random_feature_fraction": config.iot_global_random_feature_fraction,
         "experts_per_server": config.experts_per_server,
+        "server_processing_rate": config.server_processing_rate,
         "server_gpu_memory_range": config.server_gpu_memory_range,
         "wired_rate_range": config.wired_rate_range,
         "wired_extra_link_probability": config.wired_extra_link_probability,
+        "wired_edge_weight_range": config.wired_edge_weight_range,
         "c_bw": config.c_bw,
         "c_act": config.c_act,
         "c_fwd": config.c_fwd,
+        "default_feature_bits": config.default_feature_bits,
         "feature_bits_range": config.feature_bits_range,
         "wavelength": config.wavelength,
         "noise_power": config.noise_power,
@@ -238,10 +291,20 @@ def result_diagnostics(result: Any, config: ExperimentConfig) -> dict[str, float
         server_counts.append(len({server_id for server_id, _ in pairs}))
         expert_counts.append(len(pairs))
 
+    evaluation = getattr(result, "evaluation", None)
+    timing = getattr(evaluation, "timing", None)
+    start_times = getattr(timing, "subtask_start_time", {}) or {}
+    finish_times = getattr(timing, "subtask_finish_time", {}) or {}
+    inference_time_ms = 1000.0 * sum(
+        max(0.0, finish_time - start_times.get(key, finish_time))
+        for key, finish_time in finish_times.items()
+    )
+
     return {
         "activation_usage": safe_usage(result.activation_cost, config.c_act),
         "bandwidth_usage": safe_usage(result.bandwidth_cost, config.c_bw),
         "forwarding_usage": safe_usage(result.forwarding_cost, config.c_fwd),
+        "inference_time_ms": inference_time_ms,
         "avg_servers_per_subtask": sum(server_counts) / len(server_counts) if server_counts else 0.0,
         "avg_experts_per_subtask": sum(expert_counts) / len(expert_counts) if expert_counts else 0.0,
     }
@@ -269,10 +332,15 @@ def print_method_result(method_name: str, result_path, result: Any, config: Expe
     print_cost_line("Activation", result.activation_cost, config.c_act, "activated expert memory")
     print_cost_line("Bandwidth", result.bandwidth_cost, config.c_bw, "Hz")
     print_cost_line("Forwarding", result.forwarding_cost, config.c_fwd, "forwarding events")
-    print_cost_line("Inference", getattr(result, "inference_cost", 0.0), 1.0, "expert inference cost units")
+    print_cost_line(
+        "Inference",
+        getattr(result, "inference_cost", 0.0),
+        config.c_inf,
+        "executed expert complexity (MFLOP-equivalent)",
+    )
     print_diagnostics(result, config)
     print(f"{method_name} violations: {len(result.violations)}")
-    if method_name == "JRGEP" and graphs is not None:
+    if method_name == METHOD_DISPLAY_NAMES["our_similarity_aware_topk_backhaul"] and graphs is not None:
         print_node_loss_summary(result, config, graphs)
 
 
@@ -314,11 +382,12 @@ def print_node_loss_summary(result: Any, config: ExperimentConfig, graphs) -> No
 
 
 METHOD_DISPLAY_NAMES = {
-    "hybrid_topk_gssgd_backhaul": "Hybrid TopK+GSSGD",
-    "hybrid_topk_location_aware_backhaul": "Hybrid TopK+location_aware",
-    "wdmoe_gssgd": "WDMoE+GSSGD",
-    "wdmoe_location_aware": "WDMoE+location_aware",
-    "our_similarity_aware_topk_backhaul": "JRGEP",}
+    "hybrid_topk_gssgd_backhaul": "Top-k + CSSGD",
+    "hybrid_topk_location_aware_backhaul": "Top-k + Location_aware",
+    "wdmoe_gssgd": "WDMoE + CSSGD",
+    "wdmoe_location_aware": "WDMoE + Location_aware",
+    "our_similarity_aware_topk_backhaul": "JRGXP",
+}
 
 
 COST_COLORS = {
@@ -467,6 +536,8 @@ def run_enabled_methods(
 ) -> dict[str, Any]:
     results: dict[str, Any] = {}
     base_kwargs = common_scheduler_kwargs(config, seeds)
+    rsma_integration.NESTED_SERVER_BASE = config.nested_server_base
+    expert_deployment.NESTED_STORAGE_BASE = config.nested_storage_base
 
     if config.run_hybrid_topk_gssgd_backhaul:
         result_path = config.results_dir / "hybrid_topk_gssgd_backhaul_result.json"
@@ -478,7 +549,7 @@ def run_enabled_methods(
             **grouping_kwargs(config),
         )
         if print_details:
-            print_method_result("Hybrid TopK+GSSGD", result_path, result, config, graphs)
+            print_method_result(METHOD_DISPLAY_NAMES["hybrid_topk_gssgd_backhaul"], result_path, result, config, graphs)
         results["hybrid_topk_gssgd_backhaul"] = result
 
     if config.run_hybrid_topk_location_aware_backhaul:
@@ -491,7 +562,7 @@ def run_enabled_methods(
             **grouping_kwargs(config),
         )
         if print_details:
-            print_method_result("Hybrid TopK+location_aware", result_path, result, config, graphs)
+            print_method_result(METHOD_DISPLAY_NAMES["hybrid_topk_location_aware_backhaul"], result_path, result, config, graphs)
         results["hybrid_topk_location_aware_backhaul"] = result
 
 
@@ -506,7 +577,7 @@ def run_enabled_methods(
             **wdmoe_kwargs(config),
         )
         if print_details:
-            print_method_result("WDMoE+GSSGD", result_path, result, config, graphs)
+            print_method_result(METHOD_DISPLAY_NAMES["wdmoe_gssgd"], result_path, result, config, graphs)
         results["wdmoe_gssgd"] = result
 
     if config.run_wdmoe_location_aware:
@@ -520,7 +591,7 @@ def run_enabled_methods(
             **wdmoe_kwargs(config),
         )
         if print_details:
-            print_method_result("WDMoE+location_aware", result_path, result, config, graphs)
+            print_method_result(METHOD_DISPLAY_NAMES["wdmoe_location_aware"], result_path, result, config, graphs)
         results["wdmoe_location_aware"] = result
 
     if config.run_our_similarity_aware_topk_backhaul:
@@ -533,7 +604,7 @@ def run_enabled_methods(
             **our_algorithm_kwargs(config, graphs, seeds),
         )
         if print_details:
-            print_method_result("JRGEP", result_path, result, config, graphs)
+            print_method_result(METHOD_DISPLAY_NAMES["our_similarity_aware_topk_backhaul"], result_path, result, config, graphs)
         results["our_similarity_aware_topk_backhaul"] = result
 
     if show_plot:
@@ -590,6 +661,7 @@ def average_run_results(run_results: list[dict[str, Any]], config: ExperimentCon
             activation_usage=sum(item["activation_usage"] for item in diagnostics) / count,
             bandwidth_usage=sum(item["bandwidth_usage"] for item in diagnostics) / count,
             forwarding_usage=sum(item["forwarding_usage"] for item in diagnostics) / count,
+            inference_time_ms=sum(item["inference_time_ms"] for item in diagnostics) / count,
             avg_servers_per_subtask=sum(item["avg_servers_per_subtask"] for item in diagnostics) / count,
             avg_experts_per_subtask=sum(item["avg_experts_per_subtask"] for item in diagnostics) / count,
         )
@@ -606,7 +678,12 @@ def print_average_results(averages: dict[str, AverageResult], config: Experiment
         print_cost_line("Activation", result.activation_cost, config.c_act, "activated expert memory")
         print_cost_line("Bandwidth", result.bandwidth_cost, config.c_bw, "Hz")
         print_cost_line("Forwarding", result.forwarding_cost, config.c_fwd, "forwarding events")
-        print_cost_line("Inference", result.inference_cost, 1.0, "expert inference cost units")
+        print_cost_line(
+            "Inference",
+            result.inference_cost,
+            config.c_inf,
+            "executed expert complexity (MFLOP-equivalent)",
+        )
         print("Average diagnostics:")
         print(
             "  Assignment: "
@@ -676,18 +753,4 @@ def run_experiment(config: ExperimentConfig | None = None) -> dict[str, Any]:
         filename=None,
     )
     return averages
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

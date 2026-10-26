@@ -156,7 +156,15 @@ class Phase1ServerExpertSelectionMixin:
 
         for key, subtask in context["subtask_by_key"].items():
             server_id = placement[key]
-            expert_ids = sorted(activated.get(server_id, set()))
+            # Assign an activated expert only to subtasks that route to it
+            # (positive gating contribution); experts with zero gating add no
+            # selection probability but would still incur inference cost.
+            server_experts = sorted(activated.get(server_id, set()))
+            expert_ids = [
+                expert_id
+                for expert_id in server_experts
+                if self.evaluator.expert_contribution(subtask, expert_id) > 0.0
+            ] or server_experts
             pairs = [(server_id, expert_id) for expert_id in expert_ids]
             assignments[key] = pairs
             selected_experts_by_key[key] = set(expert_ids)
@@ -213,8 +221,8 @@ class Phase1ServerExpertSelectionMixin:
                     total_pairs / len(assignments) if assignments else 0.0
                 ),
                 "assignment_rule": (
-                    "X[i,j,s,p] = 1{rho[i,j]=s} * Y[s,p]; every expert "
-                    "activated by GreedyFill is initially assigned to every subtask on that server"
+                    "X[i,j,s,p] = 1{rho[i,j]=s} * Y[s,p] * 1{G_p(v)>0}; every expert "
+                    "activated by GreedyFill is initially assigned to every subtask on that server that routes to it"
                 ),
             }
         )
@@ -462,11 +470,43 @@ class Phase1ServerExpertSelectionMixin:
                 "placement_index": placement_index,
             }
             candidates.append((placement_index, server_id, components))
+        # Loss-feasibility filter: with many global experts most servers store
+        # few of a subtask's gating candidates, so restrict the choice to
+        # servers whose stored experts can meet every unit member's calibrated
+        # loss threshold (with all features delivered).  Fall back to all
+        # servers only when no server is feasible.
+        feasible = [
+            item
+            for item in candidates
+            if self._scope_server_can_meet_loss(item[1], deployment_unit, context)
+        ]
         score, server_id, components = max(
-            candidates,
+            feasible or candidates,
             key=lambda item: (item[0], item[1]),
         )
+        components["loss_feasible_servers"] = float(len(feasible))
         return server_id, score, components
+
+    def _scope_server_can_meet_loss(
+        self,
+        server_id: ServerId,
+        deployment_unit: Sequence[AssignmentKey],
+        context: Mapping[str, Any],
+    ) -> bool:
+        stored = [
+            expert_id
+            for expert_id in self.servers[server_id].stored_experts
+            if expert_id in self.experts
+        ]
+        for key in deployment_unit:
+            subtask = context["subtask_by_key"][key]
+            required = self.evaluator.required_selection_probability(
+                subtask,
+                set(subtask.required_features),
+            )
+            if self.evaluator.selection_probability(subtask, stored) + 1e-12 < required:
+                return False
+        return True
 
     def _maximum_gating_reuse(
         self,

@@ -10,6 +10,7 @@ Run:
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import random
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 
 from task_metadata import (
+    GatingSpec,
     make_node_attributes,
     make_task_deadline_seconds,
     update_required_upstream_outputs,
@@ -298,8 +300,7 @@ def generate_branch_dag(
     iot_features_per_node_range: tuple[int, int],
     reconstruction_sigma: float,
     reconstruction_error_range: tuple[float, float],
-    gating_peak_count_range: tuple[int, int],
-    gating_peak_mass_range: tuple[float, float],
+    gating_spec: Optional[GatingSpec],
     num_calibration_samples: int,
     calibration_loss_range: tuple[float, float],
     deadline_seconds: int,
@@ -344,8 +345,7 @@ def generate_branch_dag(
             rng=rng,
             reconstruction_sigma=reconstruction_sigma,
             reconstruction_error_range=reconstruction_error_range,
-            gating_peak_count_range=gating_peak_count_range,
-            gating_peak_mass_range=gating_peak_mass_range,
+            gating_spec=gating_spec,
             num_calibration_samples=num_calibration_samples,
             calibration_loss_range=calibration_loss_range,
         ),
@@ -372,8 +372,7 @@ def generate_branch_dag(
                     rng=rng,
                     reconstruction_sigma=reconstruction_sigma,
                     reconstruction_error_range=reconstruction_error_range,
-                    gating_peak_count_range=gating_peak_count_range,
-                    gating_peak_mass_range=gating_peak_mass_range,
+                    gating_spec=gating_spec,
                     num_calibration_samples=num_calibration_samples,
                     calibration_loss_range=calibration_loss_range,
                 ),
@@ -414,8 +413,7 @@ def generate_branch_dag(
                 rng=rng,
                 reconstruction_sigma=reconstruction_sigma,
                 reconstruction_error_range=reconstruction_error_range,
-                gating_peak_count_range=gating_peak_count_range,
-                gating_peak_mass_range=gating_peak_mass_range,
+                gating_spec=gating_spec,
                 num_calibration_samples=num_calibration_samples,
                 calibration_loss_range=calibration_loss_range,
             ),
@@ -462,8 +460,7 @@ def generate_dag(
     iot_features_per_node_range: tuple[int, int],
     reconstruction_sigma: float,
     reconstruction_error_range: tuple[float, float],
-    gating_peak_count_range: tuple[int, int],
-    gating_peak_mass_range: tuple[float, float],
+    gating_spec: Optional[GatingSpec],
     num_calibration_samples: int,
     calibration_loss_range: tuple[float, float],
     deadline_seconds: int,
@@ -480,8 +477,7 @@ def generate_dag(
             iot_features_per_node_range=iot_features_per_node_range,
             reconstruction_sigma=reconstruction_sigma,
             reconstruction_error_range=reconstruction_error_range,
-            gating_peak_count_range=gating_peak_count_range,
-            gating_peak_mass_range=gating_peak_mass_range,
+            gating_spec=gating_spec,
             num_calibration_samples=num_calibration_samples,
             calibration_loss_range=calibration_loss_range,
             deadline_seconds=deadline_seconds,
@@ -523,8 +519,7 @@ def generate_dag(
                 rng=rng,
                 reconstruction_sigma=reconstruction_sigma,
                 reconstruction_error_range=reconstruction_error_range,
-                gating_peak_count_range=gating_peak_count_range,
-                gating_peak_mass_range=gating_peak_mass_range,
+                gating_spec=gating_spec,
                 num_calibration_samples=num_calibration_samples,
                 calibration_loss_range=calibration_loss_range,
             ),
@@ -670,38 +665,286 @@ def save_dag_json(graph: nx.DiGraph, output_path: Path) -> None:
     )
 
 
-def apply_unique_subtask_templates(
-    graph: nx.DiGraph,
-    templates: dict[str, dict[str, object]],
-) -> None:
-    """Reuse unique-subtask metadata across task graph instances."""
-    for node in sorted(graph.nodes, key=lambda name: int(str(name).rsplit("_", 1)[1])):
-        local_index = str(node).rsplit("_", 1)[-1]
-        unique_id = f"subtask_{local_index}"
-        attributes = graph.nodes[node]
-        required_data = dict(attributes.get("required_data", {}))
-        upstream_outputs = list(required_data.get("upstream_outputs", []))
+def assign_unique_subtask_ids(
+    graphs: Sequence[nx.DiGraph],
+    rng: random.Random,
+    shared_subtask_ratio: float,
+    shared_subtask_graph_count_range: tuple[int, int],
+    shared_subtask_kind_count: Optional[int] = None,
+) -> dict[str, list[tuple[nx.DiGraph, str]]]:
+    """Assign private IDs and randomly reuse some IDs across distinct DAGs.
 
-        if unique_id not in templates:
-            templates[unique_id] = {
-                "iot_features": list(required_data.get("iot_features", [])),
-                "gating_weights": list(attributes.get("gating_weights", [])),
-                "expert_confidence": list(attributes.get("expert_confidence", [])),
-                "reconstruction_errors": list(attributes.get("reconstruction_errors", [])),
-                "reconstruction_loss": float(attributes.get("reconstruction_loss", 0.0)),
-                "calibration_losses": list(attributes.get("calibration_losses", [])),
+    Every node is eligible, including sources and sinks. Node role and
+    adjacency do not constrain sharing. A shared ID is assigned at most once
+    per DAG so Phase 1 has an unambiguous (task, unique-subtask) occurrence.
+    """
+    if not 0.0 <= shared_subtask_ratio <= 1.0:
+        raise ValueError("shared_subtask_ratio must be between 0 and 1.")
+
+    min_graphs, max_graphs = shared_subtask_graph_count_range
+    if min_graphs < 2 or max_graphs < min_graphs:
+        raise ValueError(
+            "shared_subtask_graph_count_range must satisfy 2 <= min <= max."
+        )
+
+    graph_by_index: dict[int, nx.DiGraph] = {}
+    available_by_graph: dict[int, list[str]] = {}
+    occurrences: dict[str, list[tuple[nx.DiGraph, str]]] = {}
+
+    for fallback_index, graph in enumerate(graphs, start=1):
+        graph_index = int(graph.graph.get("graph_index", fallback_index))
+        if graph_index in graph_by_index:
+            raise ValueError(f"Duplicate graph_index={graph_index}.")
+        graph_by_index[graph_index] = graph
+        available_by_graph[graph_index] = list(graph.nodes)
+
+        for node in graph.nodes:
+            local_index = str(node).rsplit("_", 1)[-1]
+            unique_id = f"private_g{graph_index}_{local_index}"
+            graph.nodes[node]["unique_subtask_id"] = unique_id
+            occurrences[unique_id] = [(graph, str(node))]
+
+    total_instances = sum(graph.number_of_nodes() for graph in graphs)
+    target_shared_instances = round(total_instances * shared_subtask_ratio)
+    assigned_shared_instances = 0
+    shared_counter = 0
+
+    if shared_subtask_kind_count is not None:
+        # Fixed number of shared kinds: each kind appears in
+        # U[min_graphs, max_graphs] distinct DAGs (overrides the ratio).
+        target_shared_instances = 0
+        for _ in range(int(shared_subtask_kind_count)):
+            available_graphs = [
+                graph_index
+                for graph_index, nodes in available_by_graph.items()
+                if nodes
+            ]
+            upper = min(max_graphs, len(available_graphs))
+            if upper < min_graphs:
+                break
+            occurrence_count = rng.randint(min_graphs, upper)
+            candidate_graphs = list(available_graphs)
+            selected_graphs = []
+            for _ in range(occurrence_count):
+                graph_index = rng.choices(
+                    candidate_graphs,
+                    weights=[len(available_by_graph[index]) for index in candidate_graphs],
+                    k=1,
+                )[0]
+                selected_graphs.append(graph_index)
+                candidate_graphs.remove(graph_index)
+            unique_id = f"shared_subtask_{shared_counter}"
+            shared_counter += 1
+            shared_occurrences = []
+            for graph_index in selected_graphs:
+                graph = graph_by_index[graph_index]
+                node = rng.choice(available_by_graph[graph_index])
+                available_by_graph[graph_index].remove(node)
+                old_private_id = str(graph.nodes[node]["unique_subtask_id"])
+                occurrences.pop(old_private_id)
+                graph.nodes[node]["unique_subtask_id"] = unique_id
+                shared_occurrences.append((graph, str(node)))
+            occurrences[unique_id] = shared_occurrences
+
+    while target_shared_instances - assigned_shared_instances >= min_graphs:
+        remaining = target_shared_instances - assigned_shared_instances
+        available_graphs = [
+            graph_index
+            for graph_index, nodes in available_by_graph.items()
+            if nodes
+        ]
+        max_occurrences = min(max_graphs, len(available_graphs), remaining)
+        if max_occurrences < min_graphs:
+            break
+
+        possible_counts = [
+            count
+            for count in range(min_graphs, max_occurrences + 1)
+            if remaining - count != 1
+        ]
+        occurrence_count = rng.choice(possible_counts or [max_occurrences])
+
+        # Weight graph selection by its remaining nodes while sampling without
+        # replacement. This avoids exhausting one DAG much earlier than others.
+        candidate_graphs = list(available_graphs)
+        selected_graphs: list[int] = []
+        for _ in range(occurrence_count):
+            graph_index = rng.choices(
+                candidate_graphs,
+                weights=[len(available_by_graph[index]) for index in candidate_graphs],
+                k=1,
+            )[0]
+            selected_graphs.append(graph_index)
+            candidate_graphs.remove(graph_index)
+
+        unique_id = f"shared_subtask_{shared_counter}"
+        shared_counter += 1
+        shared_occurrences: list[tuple[nx.DiGraph, str]] = []
+
+        for graph_index in selected_graphs:
+            graph = graph_by_index[graph_index]
+            node = rng.choice(available_by_graph[graph_index])
+            available_by_graph[graph_index].remove(node)
+
+            old_private_id = str(graph.nodes[node]["unique_subtask_id"])
+            occurrences.pop(old_private_id)
+            graph.nodes[node]["unique_subtask_id"] = unique_id
+            shared_occurrences.append((graph, str(node)))
+
+        occurrences[unique_id] = shared_occurrences
+        assigned_shared_instances += occurrence_count
+
+    occurrence_count_by_id = {
+        unique_id: len(instances)
+        for unique_id, instances in occurrences.items()
+    }
+    for graph in graphs:
+        shared_ids = sorted(
+            {
+                str(attributes["unique_subtask_id"])
+                for _, attributes in graph.nodes(data=True)
+                if occurrence_count_by_id[str(attributes["unique_subtask_id"])] >= 2
             }
+        )
+        graph.graph["requested_shared_subtask_ratio"] = shared_subtask_ratio
+        graph.graph["shared_subtask_instance_count"] = sum(
+            1
+            for _, attributes in graph.nodes(data=True)
+            if occurrence_count_by_id[str(attributes["unique_subtask_id"])] >= 2
+        )
+        graph.graph["shared_subtask_ids"] = shared_ids
 
-        template = templates[unique_id]
-        required_data["iot_features"] = list(template["iot_features"])
-        required_data["upstream_outputs"] = upstream_outputs
-        attributes["required_data"] = required_data
-        attributes["unique_subtask_id"] = unique_id
-        attributes["gating_weights"] = list(template["gating_weights"])
-        attributes["expert_confidence"] = list(template["expert_confidence"])
-        attributes["reconstruction_errors"] = list(template["reconstruction_errors"])
-        attributes["reconstruction_loss"] = float(template["reconstruction_loss"])
-        attributes["calibration_losses"] = list(template["calibration_losses"])
+    return occurrences
+
+
+def synchronize_shared_subtask_metadata(
+    occurrences: dict[str, list[tuple[nx.DiGraph, str]]],
+) -> None:
+    """Copy subtask metadata across instances with the same shared ID."""
+    for instances in occurrences.values():
+        if len(instances) < 2:
+            continue
+
+        template_graph, template_node = instances[0]
+        template_attributes = template_graph.nodes[template_node]
+        template_required_data = dict(
+            template_attributes.get("required_data", {})
+        )
+        template = {
+            "iot_features": deepcopy(
+                template_required_data.get("iot_features", [])
+            ),
+            "gating_weights": deepcopy(
+                template_attributes.get("gating_weights", [])
+            ),
+            "expert_confidence": deepcopy(
+                template_attributes.get("expert_confidence", [])
+            ),
+            "reconstruction_errors": deepcopy(
+                template_attributes.get("reconstruction_errors", [])
+            ),
+            "reconstruction_loss": float(
+                template_attributes.get("reconstruction_loss", 0.0)
+            ),
+            "calibration_losses": deepcopy(
+                template_attributes.get("calibration_losses", [])
+            ),
+        }
+
+        for graph, node in instances:
+            attributes = graph.nodes[node]
+            required_data = deepcopy(attributes.get("required_data", {}))
+            upstream_outputs = deepcopy(required_data.get("upstream_outputs", []))
+            required_data["iot_features"] = deepcopy(template["iot_features"])
+            required_data["upstream_outputs"] = upstream_outputs
+            attributes["required_data"] = required_data
+            attributes["gating_weights"] = deepcopy(template["gating_weights"])
+            attributes["expert_confidence"] = deepcopy(
+                template["expert_confidence"]
+            )
+            attributes["reconstruction_errors"] = deepcopy(
+                template["reconstruction_errors"]
+            )
+            attributes["reconstruction_loss"] = float(
+                template["reconstruction_loss"]
+            )
+            attributes["calibration_losses"] = deepcopy(
+                template["calibration_losses"]
+            )
+
+
+def validate_unique_subtask_assignments(
+    graphs: Sequence[nx.DiGraph],
+    occurrences: dict[str, list[tuple[nx.DiGraph, str]]],
+    shared_subtask_graph_count_range: tuple[int, int],
+) -> None:
+    """Validate IDs, shared metadata, dependencies, and DAG integrity."""
+    min_graphs, max_graphs = shared_subtask_graph_count_range
+    metadata_keys = (
+        "gating_weights",
+        "expert_confidence",
+        "reconstruction_errors",
+        "reconstruction_loss",
+        "calibration_losses",
+    )
+
+    for unique_id, instances in occurrences.items():
+        graph_indexes = [
+            int(graph.graph["graph_index"])
+            for graph, _ in instances
+        ]
+        if len(instances) >= 2:
+            if not min_graphs <= len(instances) <= max_graphs:
+                raise RuntimeError(
+                    f"{unique_id} has {len(instances)} occurrences; expected "
+                    f"between {min_graphs} and {max_graphs}."
+                )
+            if len(graph_indexes) != len(set(graph_indexes)):
+                raise RuntimeError(f"{unique_id} appears more than once in one DAG.")
+
+            template_graph, template_node = instances[0]
+            template_attributes = template_graph.nodes[template_node]
+            template_features = template_attributes.get("required_data", {}).get(
+                "iot_features", []
+            )
+            for graph, node in instances[1:]:
+                attributes = graph.nodes[node]
+                if (
+                    attributes.get("required_data", {}).get("iot_features", [])
+                    != template_features
+                ):
+                    raise RuntimeError(f"{unique_id} has inconsistent IoT features.")
+                for key in metadata_keys:
+                    if attributes.get(key) != template_attributes.get(key):
+                        raise RuntimeError(
+                            f"{unique_id} has inconsistent {key}."
+                        )
+        elif not unique_id.startswith("private_"):
+            raise RuntimeError(f"Non-shared ID {unique_id} is not private.")
+
+    for graph in graphs:
+        if not nx.is_directed_acyclic_graph(graph):
+            raise RuntimeError(
+                f"Graph {graph.graph.get('graph_index')} is not a DAG."
+            )
+        for node in graph.nodes:
+            expected_upstream = [
+                {
+                    "source_node": predecessor,
+                    "output_key": graph.nodes[predecessor]["output_key"],
+                }
+                for predecessor in sorted(
+                    graph.predecessors(node),
+                    key=lambda name: int(str(name).rsplit("_", 1)[1]),
+                )
+            ]
+            actual_upstream = graph.nodes[node].get("required_data", {}).get(
+                "upstream_outputs", []
+            )
+            if actual_upstream != expected_upstream:
+                raise RuntimeError(
+                    f"Node {node} has upstream outputs inconsistent with its edges."
+                )
 
 
 def generate_multiple_dags(
@@ -714,20 +957,22 @@ def generate_multiple_dags(
     iot_features_per_node_range: tuple[int, int] = (1, 1),
     reconstruction_sigma: float = 1.0,
     reconstruction_error_range: tuple[float, float] = (0.8, 1.5),
-    gating_peak_count_range: tuple[int, int] = (2, 4),
-    gating_peak_mass_range: tuple[float, float] = (0.45, 0.60),
+    gating_spec: Optional[GatingSpec] = None,
     num_calibration_samples: int = 20,
     calibration_loss_range: tuple[float, float] = (1.0, 4.0),
     task_deadline_seconds_range: tuple[int, int] = (60, 60),
+    shared_subtask_ratio: float = 0.4,
+    shared_subtask_graph_count_range: tuple[int, int] = (2, 4),
+    shared_subtask_kind_count: Optional[int] = None,
     verbose: bool = True,
     export_artifacts: bool = True,
 ) -> list[nx.DiGraph]:
     """Generate and export multiple DAGs."""
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
+    sharing_rng = random.Random(seed ^ 0x53484152)
 
     graphs: list[nx.DiGraph] = []
-    unique_subtask_templates: dict[str, dict[str, object]] = {}
 
     for graph_index, spec in enumerate(specs, start=1):
         deadline_seconds = make_task_deadline_seconds(
@@ -743,17 +988,57 @@ def generate_multiple_dags(
             iot_features_per_node_range=iot_features_per_node_range,
             reconstruction_sigma=reconstruction_sigma,
             reconstruction_error_range=reconstruction_error_range,
-            gating_peak_count_range=gating_peak_count_range,
-            gating_peak_mass_range=gating_peak_mass_range,
+            gating_spec=gating_spec,
             num_calibration_samples=num_calibration_samples,
             calibration_loss_range=calibration_loss_range,
             deadline_seconds=deadline_seconds,
         )
-        apply_unique_subtask_templates(graph, unique_subtask_templates)
         graphs.append(graph)
 
-        if not export_artifacts:
-            continue
+    occurrences = assign_unique_subtask_ids(
+        graphs=graphs,
+        rng=sharing_rng,
+        shared_subtask_ratio=shared_subtask_ratio,
+        shared_subtask_graph_count_range=shared_subtask_graph_count_range,
+        shared_subtask_kind_count=shared_subtask_kind_count,
+    )
+    synchronize_shared_subtask_metadata(occurrences)
+    for graph in graphs:
+        update_required_upstream_outputs(graph)
+    validate_unique_subtask_assignments(
+        graphs=graphs,
+        occurrences=occurrences,
+        shared_subtask_graph_count_range=shared_subtask_graph_count_range,
+    )
+
+    if verbose:
+        shared_ids = [
+            unique_id
+            for unique_id, instances in occurrences.items()
+            if len(instances) >= 2
+        ]
+        shared_instances = sum(
+            len(occurrences[unique_id])
+            for unique_id in shared_ids
+        )
+        total_instances = sum(graph.number_of_nodes() for graph in graphs)
+        actual_ratio = (
+            shared_instances / total_instances
+            if total_instances
+            else 0.0
+        )
+        print(
+            "[DAG sharing] "
+            f"shared_ids={len(shared_ids)}, "
+            f"shared_instances={shared_instances}/{total_instances}, "
+            f"actual_ratio={actual_ratio:.3f}"
+        )
+
+    if not export_artifacts:
+        return graphs
+
+    for graph in graphs:
+        graph_index = int(graph.graph["graph_index"])
 
         image_path = output_dir / f"dag_{graph_index}.png"
         graphml_path = output_dir / f"dag_{graph_index}.graphml"
@@ -793,7 +1078,8 @@ def generate_multiple_dags(
             f"[DAG {graph_index}] "
             f"nodes={graph.number_of_nodes()}, "
             f"edges={graph.number_of_edges()}, "
-            f"deadline_seconds={deadline_seconds}, "
+            f"deadline_seconds={graph.graph['deadline_seconds']}, "
+            f"shared_instances={graph.graph['shared_subtask_instance_count']}, "
             f"layer_widths={graph.graph['layer_widths']}"
             f"{branch_info}"
         )

@@ -109,9 +109,9 @@ class SIoT:
         shadowing_db = np.random.normal(0, 1)  # 陰影衰落
         shadowing = 10 ** (shadowing_db / 10)
 
-        small_scale_fading = np.random.normal(0, 1) + 1j * np.random.normal(0, 1)  # 小尺度衰落
+        small_scale_fading = (np.random.normal(0, 1) + 1j * np.random.normal(0, 1)) / np.sqrt(2.0)  # CN(0,1)
         
-        h_k = np.abs(small_scale_fading) / (loss * shadowing)
+        h_k = np.abs(small_scale_fading) / np.sqrt(loss * shadowing)  # Amplitude
 
         return h_k
 

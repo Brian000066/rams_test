@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 import json
-
+from config import TX_POWER_PSD
 
 
 # class channel:
@@ -51,7 +51,7 @@ class SIoT:
         self.num_locations=0
         self.cpu_frequency=1
         self.d2d_rate=1
-        self.power=1.2589e-3
+        self.power = TX_POWER_PSD  # Transmit PSD in W/Hz
         self.gain = self.channel_gain(self.distance)  # 計算信道增益
     def __hash__(self):
         return hash(self.index)
@@ -99,9 +99,9 @@ class SIoT:
         shadowing_db = np.random.normal(0, 1)  # 陰影衰落
         shadowing = 10 ** (shadowing_db / 10)
 
-        small_scale_fading = np.random.normal(0, 1) + 1j * np.random.normal(0, 1)  # 小尺度衰落
+        small_scale_fading = (np.random.normal(0, 1) + 1j * np.random.normal(0, 1)) / np.sqrt(2.0)  # CN(0,1)
         
-        h_k = np.abs(small_scale_fading) / (loss * shadowing)
+        h_k = np.abs(small_scale_fading) / np.sqrt(loss * shadowing)  # Amplitude
 
         return h_k
 

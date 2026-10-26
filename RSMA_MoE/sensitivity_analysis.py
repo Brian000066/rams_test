@@ -23,11 +23,6 @@ from experiment_runner import (
 
 SWEEPS: dict[str, list[int]] = {
     "dag_num_nodes": [6, 8, 10, 12, 14],
-    "dag_num_branches": [2, 3, 4, 5],
-    "num_dags": [1, 2, 3, 4, 5],
-    "deadline_seconds": [30, 45, 60, 90, 120],
-    "features_per_node": [2, 3, 4, 5, 6],
-    "num_iot_devices": [60, 80, 100, 120, 150],
     "topk_k": [4, 5, 6, 7, 8],
 }
 METHOD_ORDER = [
@@ -120,7 +115,12 @@ def print_point_summary(
         print_cost_line("Activation", result.activation_cost, config.c_act, "activated expert memory")
         print_cost_line("Bandwidth", result.bandwidth_cost, config.c_bw, "Hz")
         print_cost_line("Forwarding", result.forwarding_cost, config.c_fwd, "forwarding events")
-        print_cost_line("Inference", result.inference_cost, 1.0, "expert inference cost units")
+        print_cost_line(
+            "Inference",
+            result.inference_cost,
+            config.c_inf,
+            "executed expert complexity (MFLOP-equivalent)",
+        )
 
 
 def loss_bound_text(config: ExperimentConfig) -> str:
@@ -227,7 +227,11 @@ def plot_sweep_metric(
         )
 
     axis.set_title(title)
-    axis.set_xlabel(parameter_name)
+    x_axis_labels = {
+        "dag_num_nodes": "Number of graph nodes",
+        "topk_k": "Number of K",
+    }
+    axis.set_xlabel(x_axis_labels.get(parameter_name, parameter_name))
     axis.set_ylabel(y_label)
     axis.grid(True, linestyle="--", alpha=0.3)
     axis.legend()
@@ -249,13 +253,16 @@ def plot_sweep_metric(
     print(f"Saved figure: {saved_path.resolve()}")
 
 
-def plot_sweep(
+def plot_total_cost_sweep(
     parameter_name: str,
     sweep_results: dict[int, dict[str, AverageResult]],
     base_config: ExperimentConfig,
     runs: int,
 ) -> None:
-    # Keep the original sensitivity figure for every swept parameter.
+    total_cost_titles = {
+        "dag_num_nodes": "Average Total Cost vs Number of Graph Nodes",
+        "topk_k": "Average Total Cost vs K",
+    }
     plot_sweep_metric(
         parameter_name=parameter_name,
         sweep_results=sweep_results,
@@ -263,23 +270,28 @@ def plot_sweep(
         runs=runs,
         metric_name="total_cost",
         y_label="Average Total Cost",
-        title=f"Average Total Cost vs {parameter_name}",
+        title=total_cost_titles.get(parameter_name, f"Average Total Cost vs {parameter_name}"),
     )
 
-    # Add focused diagnostic figures for the relationships we want to explain.
+
+def plot_extra_sweep_metric(
+    parameter_name: str,
+    sweep_results: dict[int, dict[str, AverageResult]],
+    base_config: ExperimentConfig,
+    runs: int,
+) -> None:
+    # Each physical hop has its own edge weight. forwarding_usage is therefore
+    # the accumulated minimum-route weight, rather than an unweighted hop count.
     extra_plot_specs = {
-        "features_per_node": [
-            ("bandwidth_cost", "Average Bandwidth Cost", "Average Bandwidth Cost vs Required Features per Node"),
-        ],
-        "num_iot_devices": [
-            ("bandwidth_cost", "Average Bandwidth Cost", "Average Bandwidth Cost vs IoT Device Count"),
-        ],
-        "dag_num_branches": [
-            ("forwarding_cost", "Average Forwarding Cost", "Average Forwarding Cost vs DAG Branch Count"),
+        "dag_num_nodes": [
+            (
+                "forwarding_usage",
+                "Average Weighted Route Cost",
+                "Average Weighted Route Cost vs Number of Graph Nodes",
+            ),
         ],
         "topk_k": [
-            ("activation_usage", "Average Activation Count", "Average Activation Count vs Top-K"),
-            ("bandwidth_cost", "Average Bandwidth Cost", "Average Bandwidth Cost vs Top-K"),
+            ("inference_time_ms", "Average Inference Time (ms)", "Average Inference Time vs K"),
         ],
     }
     for metric_name, y_label, title in extra_plot_specs.get(parameter_name, []):
@@ -294,17 +306,38 @@ def plot_sweep(
         )
 
 
-def run_all_sweeps(runs: int) -> None:
+def plot_sweep(
+    parameter_name: str,
+    sweep_results: dict[int, dict[str, AverageResult]],
+    base_config: ExperimentConfig,
+    runs: int,
+) -> None:
+    """Plot both requested metrics for one sweep (backward-compatible helper)."""
+    plot_total_cost_sweep(parameter_name, sweep_results, base_config, runs)
+    plot_extra_sweep_metric(parameter_name, sweep_results, base_config, runs)
+
+
+def run_all_sweeps(
+    runs: int,
+    base_config: ExperimentConfig | None = None,
+) -> dict[str, dict[int, dict[str, AverageResult]]]:
     base_config = replace(
-        ExperimentConfig(),
+        base_config or ExperimentConfig(),
         auto_random_seed=False,
         num_runs=runs,
     )
-    all_results = {}
+    all_results: dict[str, dict[int, dict[str, AverageResult]]] = {}
     for parameter_name, values in SWEEPS.items():
         all_results[parameter_name] = run_parameter_sweep(base_config, parameter_name, values)
-        plot_sweep(parameter_name, all_results[parameter_name], base_config, runs)
+
+    # Follow the requested table order: both total-cost figures first, followed
+    # by weighted route cost and inference time.
+    for parameter_name in SWEEPS:
+        plot_total_cost_sweep(parameter_name, all_results[parameter_name], base_config, runs)
+    for parameter_name in SWEEPS:
+        plot_extra_sweep_metric(parameter_name, all_results[parameter_name], base_config, runs)
     plt.show()
+    return all_results
 
 
 def main() -> None:
@@ -318,11 +351,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
 
 

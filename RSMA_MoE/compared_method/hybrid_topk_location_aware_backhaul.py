@@ -15,6 +15,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from rsma_integration import build_scheduler_inputs  # noqa: E402
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
 from utils.formulation import (  # noqa: E402
     AssignmentKey,
     DeviceId,
@@ -24,6 +25,7 @@ from utils.formulation import (  # noqa: E402
     FormulationEvaluator,
     GroupId,
     GroupSpec,
+    InfeasibleBandwidthBudget,
     ServerId,
     SubtaskSpec,
     normalize_devices,
@@ -34,6 +36,8 @@ from utils.formulation import (  # noqa: E402
 
 BackhaulEdge = Tuple[ServerId, GroupId, ServerId]
 GroupKey = Tuple[ServerId, GroupId]
+FeatureDemandKey = Tuple[str, str, ServerId, str]
+FeatureSource = Tuple[ServerId, GroupId]
 
 
 @dataclass
@@ -67,6 +71,9 @@ class ChainedPipelineResult:
     backhaul: Set[BackhaulEdge] = field(default_factory=set)
     violations: List[str] = field(default_factory=list)
     evaluation: Optional[EvaluationResult] = None
+    feature_source_map: Dict[FeatureDemandKey, FeatureSource] = field(
+        default_factory=dict
+    )
 
 
 class ChainedComparisonPipeline:
@@ -129,7 +136,14 @@ class ChainedComparisonPipeline:
         server_features = self._server_required_features(data_req)
         feature_to_groups = self._feature_to_groups(active_groups)
         backhaul, plan = self._derive_backhaul(data_req, feature_to_groups)
-        groups, budgets = self._derive_group_bandwidths(active_groups, assignments, data_req, backhaul, feature_to_groups)
+        groups, budgets = self._derive_group_bandwidths(
+            active_groups,
+            assignments,
+            data_req,
+            backhaul,
+            feature_to_groups,
+            subtask_features=subtask_features,
+        )
         eval_config = replace(self.config, derive_bandwidth=False)
         evaluator = FormulationEvaluator(self.servers, self.devices, self.experts, self.tasks, eval_config)
         evaluation = evaluator.evaluate(assignments, groups, backhaul, subtask_features=subtask_features)
@@ -469,8 +483,19 @@ class ChainedComparisonPipeline:
                         break
                     group, target_server = repair
                     group_key = (group.server_id, group.id)
+                    trial_features = {
+                        feature_key: set(features)
+                        for feature_key, features in subtask_features.items()
+                    }
+                    trial_features.setdefault(
+                        self._server_feature_key(key, target_server), set()
+                    ).update(group.required_features & subtask.required_features)
+                    group_budget = self._subtask_bandwidth_budget(
+                        key,
+                        assignments,
+                        subtask_features=trial_features,
+                    )
                     active_groups[group_key] = group
-                    group_budget = self._subtask_bandwidth_budget(key, assignments)
                     active_group_budgets[group_key] = min(active_group_budgets.get(group_key, group_budget), group_budget)
                     if group.server_id != target_server:
                         active_backhaul.add((group.server_id, group.id, target_server))
@@ -569,7 +594,6 @@ class ChainedComparisonPipeline:
         probability: float,
         threshold: float,
     ) -> None:
-        group_budget = self._subtask_bandwidth_budget(key, assignments)
         needed = set(subtask.required_features)
         while True:
             current_rec = self._average_reconstruction_for_servers(subtask, key, target_servers, subtask_features, assignments)
@@ -592,6 +616,18 @@ class ChainedComparisonPipeline:
                 break
             group, target_server = repair
             group_key = (group.server_id, group.id)
+            trial_features = {
+                feature_key: set(features)
+                for feature_key, features in subtask_features.items()
+            }
+            trial_features.setdefault(
+                self._server_feature_key(key, target_server), set()
+            ).update(group.required_features & needed)
+            group_budget = self._subtask_bandwidth_budget(
+                key,
+                assignments,
+                subtask_features=trial_features,
+            )
             active_groups[group_key] = group
             active_group_budgets[group_key] = min(active_group_budgets.get(group_key, group_budget), group_budget)
             self._server_feature_set(subtask_features, key, target_server).update(
@@ -644,6 +680,7 @@ class ChainedComparisonPipeline:
                     set(),
                     active_group_budgets,
                     assignments,
+                    trial_features,
                 )
                 coverage = len(group.required_features & missing)
                 item = (cost, -coverage, group.server_id, group.id, target_server, group)
@@ -766,6 +803,7 @@ class ChainedComparisonPipeline:
                     active_backhaul,
                     active_group_budgets,
                     assignments,
+                    trial_features,
                 )
                 coverage = len(group.required_features & missing)
                 item = (cost, -coverage, group.server_id, group.id, target_server, group)
@@ -791,10 +829,20 @@ class ChainedComparisonPipeline:
         active_backhaul: Set[BackhaulEdge],
         active_group_budgets: Mapping[GroupKey, float],
         assignments: Mapping[AssignmentKey, Sequence[Tuple[ServerId, ExpertId]]],
+        subtask_features: Mapping[Tuple[str, str, str], Set[str]],
     ) -> float:
         cost = 0.0
         group_key = (group.server_id, group.id)
-        new_budget = self._subtask_bandwidth_budget(key, assignments)
+        try:
+            new_budget = self._subtask_bandwidth_budget(
+                key,
+                assignments,
+                group,
+                target_servers,
+                subtask_features=subtask_features,
+            )
+        except InfeasibleBandwidthBudget:
+            return float("inf")
         if group_key in active_groups:
             old_budget = active_group_budgets.get(group_key, self.evaluator.bandwidth_time_budget())
             resolved_budget = min(old_budget, new_budget)
@@ -815,13 +863,35 @@ class ChainedComparisonPipeline:
         self,
         key: AssignmentKey,
         assignments: Mapping[AssignmentKey, Sequence[Tuple[ServerId, ExpertId]]],
+        group: GroupSpec | None = None,
+        target_servers: Sequence[ServerId] = (),
+        subtask_features: Mapping[Tuple[str, str, str], Set[str]] | None = None,
     ) -> float:
         task = self.tasks.get(key[0])
         if task is None or task.deadline == float("inf"):
             return self.evaluator.bandwidth_time_budget()
-        downstream = self._downstream_compute_times(assignments)
-        remaining = task.deadline - downstream.get(key, 0.0)
-        return max(remaining, 1e-12)
+        latest_start = self.evaluator.latest_subtask_start_times(
+            assignments,
+            subtask_features=subtask_features,
+        )
+        remaining = latest_start.get(key, task.deadline)
+        if group is not None:
+            for target_server in target_servers:
+                if group.server_id == target_server:
+                    continue
+                remaining = min(
+                    remaining,
+                    latest_start.get(key, task.deadline)
+                    - self.evaluator.group_feature_volume(group)
+                    / self.evaluator.wired_rate(group.server_id, target_server),
+                )
+        if remaining <= 0.0:
+            raise InfeasibleBandwidthBudget(
+                f"RSMA group {group.server_id}:{group.id} cannot serve "
+                f"{key[0]}:{key[1]}: remaining uplink time is "
+                f"{remaining:.6g}s"
+            )
+        return remaining
     def _candidate_server_features(self, assignments):
         required = {server_id: set() for server_id in self.servers}
         for task in self.tasks.values():
@@ -1053,7 +1123,7 @@ class ChainedComparisonPipeline:
 
     def _derive_backhaul(self, subtask_data_requirements, feature_to_groups):
         backhaul: Set[BackhaulEdge] = set()
-        features_by_edge: Dict[BackhaulEdge, Set[str]] = {}
+        source_by_edge: Dict[BackhaulEdge, GroupSpec] = {}
         for server_map in subtask_data_requirements.values():
             for target_server, features in server_map.items():
                 for feature in features:
@@ -1068,9 +1138,18 @@ class ChainedComparisonPipeline:
                         continue
                     edge = (source.server_id, source.id, target_server)
                     backhaul.add(edge)
-                    features_by_edge.setdefault(edge, set()).add(feature)
+                    source_by_edge[edge] = source
         plan = [
-            ChainedBackhaulDecision(source_server=s, group_id=g, target_server=t, features=sorted(features_by_edge[(s, g, t)]))
+            ChainedBackhaulDecision(
+                source_server=s,
+                group_id=g,
+                target_server=t,
+                features=sorted(
+                    self.evaluator.group_transmitted_features(
+                        source_by_edge[(s, g, t)]
+                    )
+                ),
+            )
             for s, g, t in sorted(backhaul)
         ]
         return backhaul, plan
@@ -1088,25 +1167,81 @@ class ChainedComparisonPipeline:
             ),
         )
 
-    def _derive_group_bandwidths(self, groups, assignments, data_req, backhaul, feature_to_groups):
-        dependencies = self._group_dependencies(groups, assignments, data_req, backhaul, feature_to_groups)
-        downstream = self._downstream_compute_times(assignments)
+    def _derive_group_bandwidths(
+        self,
+        groups,
+        assignments,
+        data_req,
+        backhaul,
+        feature_to_groups,
+        feature_source_map=None,
+        subtask_features=None,
+    ):
+        dependencies = self._group_dependencies(
+            groups,
+            assignments,
+            data_req,
+            backhaul,
+            feature_to_groups,
+            feature_source_map=feature_source_map,
+        )
+        latest_start = self.evaluator.latest_subtask_start_times(
+            assignments,
+            subtask_features=subtask_features,
+        )
         budgets: Dict[GroupKey, float] = {}
         resolved: List[GroupSpec] = []
         for group in groups:
             group_key = (group.server_id, group.id)
-            budget = self._strict_group_budget(group, dependencies, downstream)
+            budget = self._strict_group_budget(group, dependencies, latest_start)
             budgets[group_key] = budget
             bandwidth = self.evaluator.derive_group_bandwidth_for_budget(group, budget)
             resolved.append(replace(group, bandwidth=bandwidth))
         return resolved, budgets
-    def _group_dependencies(self, groups, assignments, data_req, backhaul, feature_to_groups):
+    def _group_dependencies(
+        self,
+        groups,
+        assignments,
+        data_req,
+        backhaul,
+        feature_to_groups,
+        feature_source_map=None,
+    ):
         dependencies: Dict[GroupKey, Set[Tuple[AssignmentKey, ServerId]]] = {(g.server_id, g.id): set() for g in groups}
+        group_by_key = {(group.server_id, group.id): group for group in groups}
+        source_map = feature_source_map or {}
         for key in assignments:
             label = self._assignment_label(key)
             for target_server, features in data_req.get(label, {}).items():
                 for feature in features:
-                    group = self._serving_group_for_feature(feature, target_server, backhaul, feature_to_groups)
+                    demand_key = (key[0], key[1], target_server, feature)
+                    mapped_source = source_map.get(demand_key)
+                    if mapped_source is None:
+                        group = self._serving_group_for_feature(
+                            feature,
+                            target_server,
+                            backhaul,
+                            feature_to_groups,
+                        )
+                    else:
+                        source_key = tuple(mapped_source)
+                        group = group_by_key.get(source_key)
+                        if group is None:
+                            raise ValueError(
+                                f"Mapped feature source {source_key} does not exist "
+                                f"for demand {demand_key}"
+                            )
+                        if feature not in self.evaluator.group_transmitted_features(group):
+                            raise ValueError(
+                                f"Mapped feature source {source_key} does not transmit "
+                                f"{feature} for demand {demand_key}"
+                            )
+                        edge = (group.server_id, group.id, target_server)
+                        if group.server_id != target_server and edge not in backhaul:
+                            raise ValueError(
+                                f"Mapped feature source {source_key} cannot reach "
+                                f"{target_server} for demand {demand_key}"
+                            )
                     if group is not None:
                         dependencies.setdefault((group.server_id, group.id), set()).add((key, target_server))
         return dependencies
@@ -1147,9 +1282,18 @@ class ChainedComparisonPipeline:
         return downstream
 
     def _subtask_compute_time(self, key, assignments):
-        return max((self.experts[eid].latency for _, eid in assignments.get(key, [])), default=0.0)
+        return max(
+            (
+                self.evaluator.server_computation_time(key, server_id, assignments)
+                for server_id in self.evaluator.participating_servers(
+                    assignments,
+                    key,
+                )
+            ),
+            default=0.0,
+        )
 
-    def _strict_group_budget(self, group, dependencies, downstream):
+    def _strict_group_budget(self, group, dependencies, latest_start):
         group_key = (group.server_id, group.id)
         dependent_items = dependencies.get(group_key, set())
         if not dependent_items:
@@ -1163,9 +1307,18 @@ class ChainedComparisonPipeline:
                 backhaul_time = 0.0
                 if group.server_id != target_server:
                     backhaul_time = self.evaluator.group_feature_volume(group) / self.evaluator.wired_rate(group.server_id, target_server)
-                remaining = task.deadline - downstream.get((task_id, subtask_id), 0.0) - backhaul_time
-                budgets.append(max(remaining, 1e-12))
-        return max(min(budgets), 1e-12)
+                remaining = (
+                    latest_start.get((task_id, subtask_id), task.deadline)
+                    - backhaul_time
+                )
+                if remaining <= 0.0:
+                    raise InfeasibleBandwidthBudget(
+                        f"RSMA group {group.server_id}:{group.id} cannot serve "
+                        f"{task_id}:{subtask_id} on {target_server}: remaining "
+                        f"uplink time is {remaining:.6g}s"
+                    )
+                budgets.append(remaining)
+        return min(budgets)
 
     def _derive_bandwidth_for_budget(self, group, budget):
         if not group.devices or not group.required_features:
@@ -1293,6 +1446,21 @@ def result_to_jsonable(
         "group_required_features": result.group_required_features,
         "group_time_budgets": result.group_time_budgets,
         "rsma_group_bandwidths": result.rsma_group_bandwidths,
+        "feature_source_map": {
+            f"{task_id}:{subtask_id}:{target_server}:{feature}": {
+                "source_server": source_server,
+                "group_id": group_id,
+            }
+            for (
+                task_id,
+                subtask_id,
+                target_server,
+                feature,
+            ), (
+                source_server,
+                group_id,
+            ) in sorted(result.feature_source_map.items())
+        },
         "backhaul": [list(item) for item in sorted(result.backhaul)],
         "backhaul_plan": [decision.__dict__ for decision in result.backhaul_plan],
         "violations": result.violations,
@@ -1309,6 +1477,12 @@ def run_chained_pipeline(
     num_experts: int,
     num_iot_features: int,
     expert_memory_range: tuple[float, float] | None = None,
+    expert_memory_sizes_mb: Sequence[float] | None = None,
+    expert_inference_times_ms: Sequence[float] | None = None,
+    expert_hidden_dimensions: Sequence[int] | None = None,
+    expert_parameter_counts: Sequence[int] | None = None,
+    inference_unit_cost_per_mb: float = 0.06,
+    reasoning_data_sizes_bytes: Sequence[int] = (512,),
     feature_bits_range: tuple[float, float] | None = None,
     top_k: int = 2,
     num_servers: int = 9,
@@ -1317,18 +1491,20 @@ def run_chained_pipeline(
     server_feature_overlap_ratio: float = 0.25,
     global_random_feature_fraction: float = 0.15,
     experts_per_server: int = 4,
+    server_processing_rate: float = 300e6,
     server_gpu_memory: float = 8192.0,
     server_gpu_memory_range: tuple[float, float] | None = None,
     wired_rate_range: tuple[float, float] | None = None,
     wired_extra_link_probability: float = 0.05,
+    wired_edge_weight_range: tuple[float, float] = (1.0, 3.0),
     c_bw: float = 1e-3,
     c_act: float = 1.0,
     c_fwd: float = 1.0,
     default_feature_bits: float = 12000.0,
     wavelength: float = 0.125,
-    noise_power: float = 1e-18,
+    noise_power: float = NOISE_PSD_W_PER_HZ,
     common_power_ratio: float = 0.6,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,
@@ -1349,6 +1525,12 @@ def run_chained_pipeline(
         num_experts=num_experts,
         num_iot_features=num_iot_features,
         expert_memory_range=expert_memory_range,
+        expert_memory_sizes_mb=expert_memory_sizes_mb,
+        expert_inference_times_ms=expert_inference_times_ms,
+        expert_hidden_dimensions=expert_hidden_dimensions,
+        expert_parameter_counts=expert_parameter_counts,
+        inference_unit_cost_per_mb=inference_unit_cost_per_mb,
+        reasoning_data_sizes_bytes=reasoning_data_sizes_bytes,
         feature_bits_range=feature_bits_range,
         num_servers=num_servers,
         num_iot_devices=num_iot_devices,
@@ -1356,10 +1538,12 @@ def run_chained_pipeline(
         server_feature_overlap_ratio=server_feature_overlap_ratio,
         global_random_feature_fraction=global_random_feature_fraction,
         experts_per_server=experts_per_server,
+        server_processing_rate=server_processing_rate,
         server_gpu_memory=server_gpu_memory,
         server_gpu_memory_range=server_gpu_memory_range,
         wired_rate_range=wired_rate_range,
         wired_extra_link_probability=wired_extra_link_probability,
+        wired_edge_weight_range=wired_edge_weight_range,
         default_feature_bits=default_feature_bits,
         max_device_power=max_device_power,
         area_size=area_size,
@@ -1391,6 +1575,7 @@ def run_chained_pipeline(
             c_bw=c_bw,
             c_act=c_act,
             c_fwd=c_fwd,
+            c_inf=inference_unit_cost_per_mb,
             derive_bandwidth=True,
             noise_power=noise_power,
             common_power_ratio=common_power_ratio,
@@ -1414,7 +1599,7 @@ def run_chained_pipeline(
             "activation": c_act,
             "bandwidth": c_bw,
             "forwarding": c_fwd,
-            "inference": 1.0,
+            "inference": inference_unit_cost_per_mb,
         },
         "hybrid_algorithm_parameters": {
             "top_k": top_k,
@@ -1429,18 +1614,28 @@ def run_chained_pipeline(
             "num_iot_devices": num_iot_devices,
             "features_per_device_range": features_per_device_range,
             "expert_memory_range": expert_memory_range,
+            "expert_memory_sizes_mb": list(expert_memory_sizes_mb) if expert_memory_sizes_mb is not None else None,
+            "expert_hidden_dimensions": list(expert_hidden_dimensions) if expert_hidden_dimensions is not None else None,
+            "expert_parameter_counts": list(expert_parameter_counts) if expert_parameter_counts is not None else None,
+            "server_processing_rate": server_processing_rate,
+            "reasoning_data_sizes_bytes": list(reasoning_data_sizes_bytes),
             "experts_per_server": experts_per_server,
             "server_gpu_memory_range": server_gpu_memory_range,
             "wired_rate_range": wired_rate_range,
             "wired_extra_link_probability": wired_extra_link_probability,
+            "wired_edge_weight_range": wired_edge_weight_range,
             "bandwidth_mode": "pdf_equivalent_bandwidth_demand_by_group_slack",
             "default_feature_bits": default_feature_bits,
             "feature_bits_range": feature_bits_range,
             "feature_bits_by_name": feature_bits_by_name,
             "wavelength": wavelength,
             "noise_power": noise_power,
+            "noise_power_unit": "W/Hz",
             "common_power_ratio": common_power_ratio,
             "max_device_power": max_device_power,
+            "max_device_power_unit": "W/Hz",
+            "rate_model": "Shannon (linear SINR)",
+            "spectral_efficiency_unit": "bit/s/Hz",
             "area_size": area_size,
             "cell_radius": cell_radius,
             "num_antennas": num_antennas,
@@ -1459,24 +1654,15 @@ def run_chained_pipeline(
             result_to_jsonable(
                 result,
                 network_context,
-                cost_units={"activation": c_act, "bandwidth": c_bw, "forwarding": c_fwd, "inference": 1.0},
+                cost_units={
+                    "activation": c_act,
+                    "bandwidth": c_bw,
+                    "forwarding": c_fwd,
+                    "inference": inference_unit_cost_per_mb,
+                },
             ),
             file,
             ensure_ascii=False,
             indent=2,
         )
     return result
-
-
-
-
-
-
-
-
-
-
-
-
-
-

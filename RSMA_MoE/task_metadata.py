@@ -1,94 +1,108 @@
 from __future__ import annotations
 
+import math
 import random
+from dataclasses import dataclass
+from typing import Optional
 
 import networkx as nx
 
 
-def make_gating_weights(
+@dataclass(frozen=True)
+class GatingSpec:
+    """How per-subtask gating weights and expert confidence are generated.
+
+    For every subtask, K of the global experts receive a raw score
+    z ~ U(score_range); all other experts get gating weight 0.  K equals the
+    number of experts stored on the subtask's anchor server (10-15 with the
+    default deployment); ``num_candidates`` is only used when no deployment
+    is given or when it is set explicitly.  The
+    gating weights are softmax(z / temperature) over the candidates, so they
+    sum to 1.  Confidence is relative to the best candidate:
+    pi_p = G_p / max_q G_q (the best candidate has pi = 1, non-candidates 0).
+
+    When ``stored_experts_by_server`` is given, one anchor server is drawn
+    uniformly and ``anchor_count`` of its stored experts receive the highest
+    raw scores, so the global top-``anchor_count`` experts are always
+    co-located on one server.
+    """
+
+    num_candidates: Optional[int] = None
+    anchor_count: int = 3
+    secondary_anchor_count: int = 0
+    score_range: tuple[float, float] = (0.1, 1.0)
+    temperature: float = 1.0
+    stored_experts_by_server: Optional[tuple[tuple[int, ...], ...]] = None
+
+
+def make_gating_and_confidence(
     num_experts: int,
     rng: random.Random,
-    peak_count_range: tuple[int, int] = (2, 4),
-    peak_mass_range: tuple[float, float] = (0.65, 0.85),
-) -> list[float]:
-    """Create peaked MoE gating weights whose sum is exactly 1.0.
-
-    A small set of experts receives most of the probability mass, while the
-    remaining experts share a low tail. This is closer to a real MoE router
-    than normalizing independent uniform random numbers.
-    """
+    spec: GatingSpec | None = None,
+) -> tuple[list[float], list[float]]:
+    """Return (gating_weights, expert_confidence) for one subtask."""
     if num_experts < 1:
         raise ValueError("num_experts must be at least 1.")
-    if num_experts == 1:
-        return [1.0]
+    spec = spec or GatingSpec()
+    low, high = spec.score_range
+    if not 0.0 <= low <= high:
+        raise ValueError("gating score_range must satisfy 0 <= min <= max.")
+    if spec.temperature <= 0.0:
+        raise ValueError("gating temperature must be positive.")
 
-    min_peaks, max_peaks = peak_count_range
-    if min_peaks < 1 or max_peaks < min_peaks:
-        raise ValueError("gating_peak_count_range must be (min_count, max_count).")
-    min_peaks = min(min_peaks, num_experts)
-    max_peaks = min(max_peaks, num_experts)
+    anchored: list[int] = []
+    local: list[int] = []
+    stored = spec.stored_experts_by_server
+    if stored:
+        anchor_server = rng.randrange(len(stored))
+        local = [index for index in stored[anchor_server] if index < num_experts]
+    if spec.num_candidates is not None:
+        num_candidates = int(spec.num_candidates)
+    elif local:
+        # Follow the anchor server: as many scored candidates as it stores.
+        num_candidates = len(local)
+    else:
+        num_candidates = 10
+    num_candidates = max(1, min(num_candidates, num_experts))
+    if local and spec.anchor_count > 0:
+        anchor_count = min(int(spec.anchor_count), len(local), num_candidates)
+        anchored = rng.sample(local, anchor_count)
+    secondary: list[int] = []
+    if stored and len(stored) > 1 and spec.secondary_anchor_count > 0:
+        other_servers = [index for index in range(len(stored)) if index != anchor_server]
+        second_server = rng.choice(other_servers)
+        pool = [index for index in stored[second_server] if index < num_experts and index not in set(anchored)]
+        count = min(int(spec.secondary_anchor_count), len(pool), max(0, num_candidates - len(anchored)))
+        secondary = rng.sample(pool, count)
+    taken = set(anchored) | set(secondary)
+    others_pool = [index for index in range(num_experts) if index not in taken]
+    others = rng.sample(others_pool, num_candidates - len(anchored) - len(secondary))
 
-    min_mass, max_mass = peak_mass_range
-    if not 0.0 < min_mass <= max_mass < 1.0:
-        raise ValueError("gating_peak_mass_range must satisfy 0 < min <= max < 1.")
+    scores = sorted((rng.uniform(low, high) for _ in range(num_candidates)), reverse=True)
+    # Anchored experts take the highest scores; the order inside each part is random.
+    rng.shuffle(anchored)
+    rng.shuffle(secondary)
+    rng.shuffle(others)
+    # Ranks: primary anchor experts first, then the secondary server's experts.
+    candidates = anchored + secondary + others
 
-    peak_count = rng.randint(min_peaks, max_peaks)
-    peak_indices = set(rng.sample(range(num_experts), peak_count))
-    peak_mass = rng.uniform(min_mass, max_mass)
-    tail_mass = 1.0 - peak_mass
+    max_score = scores[0]
+    exp_scores = [math.exp((score - max_score) / spec.temperature) for score in scores]
+    total = sum(exp_scores)
+    candidate_weights = [value / total for value in exp_scores]
 
-    peak_raw = {index: rng.uniform(0.8, 1.2) for index in peak_indices}
-    tail_indices = [index for index in range(num_experts) if index not in peak_indices]
-    tail_raw = {index: rng.uniform(0.05, 0.35) for index in tail_indices}
+    rounded = [round(weight, 6) for weight in candidate_weights]
+    # Put the rounding residual on the top candidate so the sum is exactly 1.
+    rounded[0] = round(1.0 - sum(rounded[1:]), 6)
+    top_weight = rounded[0]
 
-    weights = [0.0 for _ in range(num_experts)]
-    peak_total = sum(peak_raw.values())
-    tail_total = sum(tail_raw.values())
-
-    for index, value in peak_raw.items():
-        weights[index] = peak_mass * value / peak_total
-    if tail_indices and tail_total > 0.0:
-        for index, value in tail_raw.items():
-            weights[index] = tail_mass * value / tail_total
-
-    rounded = [round(weight, 6) for weight in weights]
-    rounded[-1] = round(1.0 - sum(rounded[:-1]), 6)
-    return rounded
-
-
-def make_expert_confidence(
-    num_experts: int,
-    rng: random.Random,
-    gating_weights: list[float] | None = None,
-) -> list[float]:
-    """Create pi(subtask|expert), the confidence of each expert for a node.
-
-    Experts preferred by the gating network should also tend to have higher
-    confidence for that subtask; otherwise removing one Top-K expert barely
-    changes P(selected experts | subtask).
-    """
-    if gating_weights is None:
-        return [round(rng.uniform(0.55, 0.98), 6) for _ in range(num_experts)]
-
-    if len(gating_weights) != num_experts:
-        raise ValueError("gating_weights length must match num_experts.")
-
-    ranked = sorted(range(num_experts), key=lambda index: gating_weights[index], reverse=True)
-    high_count = max(1, min(4, num_experts))
-    high_indices = set(ranked[:high_count])
-    medium_count = max(high_count, min(high_count * 2, num_experts))
-    medium_indices = set(ranked[high_count:medium_count])
-
-    confidences: list[float] = []
-    for index in range(num_experts):
-        if index in high_indices:
-            value = rng.uniform(0.85, 0.98)
-        elif index in medium_indices:
-            value = rng.uniform(0.45, 0.70)
-        else:
-            value = rng.uniform(0.10, 0.40)
-        confidences.append(round(value, 6))
-    return confidences
+    gating = [0.0] * num_experts
+    confidence = [0.0] * num_experts
+    for expert_index, weight in zip(candidates, rounded):
+        gating[expert_index] = weight
+        confidence[expert_index] = round(min(1.0, weight / top_weight), 6)
+    confidence[candidates[0]] = 1.0
+    return gating, confidence
 
 
 def make_iot_features(
@@ -161,8 +175,7 @@ def make_node_attributes(
     rng: random.Random,
     reconstruction_sigma: float = 1.0,
     reconstruction_error_range: tuple[float, float] = (0.8, 1.5),
-    gating_peak_count_range: tuple[int, int] = (2, 4),
-    gating_peak_mass_range: tuple[float, float] = (0.65, 0.85),
+    gating_spec: GatingSpec | None = None,
     num_calibration_samples: int = 20,
     calibration_loss_range: tuple[float, float] = (1.0, 4.0),
 ) -> dict[str, object]:
@@ -177,11 +190,10 @@ def make_node_attributes(
         error_range=reconstruction_error_range,
         rng=rng,
     )
-    gating_weights = make_gating_weights(
+    gating_weights, expert_confidence = make_gating_and_confidence(
         num_experts,
         rng,
-        peak_count_range=gating_peak_count_range,
-        peak_mass_range=gating_peak_mass_range,
+        gating_spec,
     )
 
     return {
@@ -193,7 +205,7 @@ def make_node_attributes(
             "iot_features": iot_features,
         },
         "gating_weights": gating_weights,
-        "expert_confidence": make_expert_confidence(num_experts, rng, gating_weights),
+        "expert_confidence": expert_confidence,
         "reconstruction_errors": reconstruction_errors,
         "reconstruction_loss": compute_reconstruction_loss(
             reconstruction_errors,
@@ -238,13 +250,18 @@ def make_task_deadline_seconds(
     """Create one task deadline as a relative duration in seconds."""
     min_seconds, max_seconds = deadline_seconds_range
 
-    if min_seconds < 1:
-        raise ValueError("Task deadline must be at least 1 second.")
+    if min_seconds <= 0:
+        raise ValueError("Task deadline must be positive.")
     if max_seconds < min_seconds:
         raise ValueError(
             "TASK_DEADLINE_SECONDS_RANGE must be "
             "(min_seconds, max_seconds)."
         )
 
-    return rng.randint(min_seconds, max_seconds)
-
+    if isinstance(min_seconds, int) and isinstance(max_seconds, int):
+        # Integer range such as (3, 5): unchanged behaviour (same random stream as before).
+        return rng.randint(min_seconds, max_seconds)
+    # Float range such as (1.5, 2.5) or (2.0, 3.0): continuous uniform deadline.
+    # (Every float range uses uniform, so all x values of Fig. 4 consume the
+    # random stream identically and keep the same tasks.)
+    return rng.uniform(float(min_seconds), float(max_seconds))

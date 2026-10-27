@@ -73,12 +73,31 @@ METHOD_ORDER = (
     "our_similarity_aware_topk_backhaul",
 )
 METHOD_STYLE = {
-    "hybrid_topk_gssgd_backhaul": ("#4C78A8", "o", "-"),
-    "hybrid_topk_location_aware_backhaul": ("#F58518", "s", "--"),
-    "wdmoe_gssgd": ("#54A24B", "^", "-."),
-    "wdmoe_location_aware": ("#B279A2", "D", ":"),
-    "our_similarity_aware_topk_backhaul": ("#E45756", "X", "-"),
+    # (color, marker, linestyle) in the style of the SIoT paper figures
+    "hybrid_topk_gssgd_backhaul": ("#32CD32", "o", "-"),
+    "hybrid_topk_location_aware_backhaul": ("#FF8C00", "s", "--"),
+    "wdmoe_gssgd": ("#DC143C", "D", "-."),
+    "wdmoe_location_aware": ("#8A2BE2", "v", (0, (5, 1, 1, 1, 1, 1))),
+    "our_similarity_aware_topk_backhaul": ("#4169E1", "^", ":"),
 }
+PLOT_LABELS = {
+    "hybrid_topk_gssgd_backhaul": "Top-k+CSSGD",
+    "hybrid_topk_location_aware_backhaul": "Top-k+Location-aware",
+    "wdmoe_gssgd": "WDMoE+CSSGD",
+    "wdmoe_location_aware": "WDMoE+Location-aware",
+    "our_similarity_aware_topk_backhaul": "RESG-GoT",
+}
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "mathtext.fontset": "stix",
+    "axes.labelsize": 16,
+    "axes.labelweight": "bold",
+    "xtick.labelsize": 14,
+    "ytick.labelsize": 14,
+    "legend.fontsize": 12,
+    "axes.linewidth": 1.2,
+})
 
 
 def _avg_range(avg: int) -> tuple[int, int]:
@@ -200,7 +219,7 @@ FIGURES: tuple[Figure, ...] = (
            _set_deadline_sensitivity,
            "communication_cost", "Average deadline (s)",
            "Communication cost (bandwidth + forwarding)", paired=True),
-    Figure(5, "max_group_size", (2, 3, 4, 5),
+    Figure(5, "max_group_size", (2, 3, 4, 5, 6),
            lambda c, v: replace(c, max_group_size=int(v)),
            "bandwidth_cost", r"Maximum group size $N_{th}$", "Bandwidth cost"),
     Figure(6, "subtasks_per_task", (10, 15, 20, 25, 30),
@@ -213,7 +232,7 @@ FIGURES: tuple[Figure, ...] = (
            lambda c, v: replace(c, iot_features_per_device_range=_avg_range(v)),
            "communication_cost", "Average number of features per IoT",
            "Communication cost (bandwidth + forwarding)"),
-    Figure(9, "required_features_per_task", (10, 15, 20, 25, 30),
+    Figure(9, "required_features_per_task", (40, 50, 60, 70, 80),
            _set_required_features_per_task,
            "total_cost", "Average number of required features per task", "Total cost"),
     Figure(10, "shared_kinds", (0, 2, 4, 6, 8),
@@ -221,7 +240,7 @@ FIGURES: tuple[Figure, ...] = (
            "total_cost", "Number of shared subtasks (kinds)", "Total cost"),
 )
 FIGURES = FIGURES + (
-    Figure(11, "multi_iot_groups", (2, 3, 4, 5),
+    Figure(11, "multi_iot_groups", (2, 3, 4, 5, 6),
            lambda c, v: replace(c, max_group_size=int(v)),
            "multi_groups", r"Maximum group size $N_{th}$",
            "Number of groups $-$ number of single-IoT groups"),
@@ -479,7 +498,7 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
     figure_dir = run_dir / "figures"
     figure_dir.mkdir(exist_ok=True)
     summary = []
-    fig, axis = plt.subplots(figsize=(7.2, 4.8))
+    fig, axis = plt.subplots(figsize=(6.4, 4.4))
     for method_key in METHOD_ORDER:
         xs, ys = [], []
         for value in figure.values:
@@ -500,14 +519,18 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
         if xs:
             color, marker, line = METHOD_STYLE[method_key]
             axis.plot(xs, ys, color=color, marker=marker, linestyle=line, linewidth=2,
-                      markersize=7, label=METHOD_DISPLAY_NAMES.get(method_key, method_key))
+                      markersize=9, label=PLOT_LABELS.get(method_key, METHOD_DISPLAY_NAMES.get(method_key, method_key)))
     if figure.log_y:
         axis.set_yscale("log")
     axis.set_xlabel(figure.x_label)
     axis.set_ylabel(figure.y_label)
     axis.set_xticks(list(figure.values))
-    axis.grid(True, linestyle="--", alpha=0.3)
-    axis.legend(fontsize=8)
+    axis.grid(True, linestyle="--", color="gray", alpha=0.5)
+    axis.tick_params(direction="out", length=4, width=1.2)
+    for tick in axis.get_xticklabels() + axis.get_yticklabels():
+        tick.set_fontweight("bold")
+    axis.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False,
+                handlelength=2.6, columnspacing=1.2, handletextpad=0.4, borderaxespad=0.2)
     fig.tight_layout()
     fig.savefig(figure_dir / f"fig{figure.number:02d}_{figure.key}.png", dpi=200)
     plt.close(fig)

@@ -1,4 +1,4 @@
-"""Sensitivity figures 1-11 for the JRGXP paper (line charts).
+"""Sensitivity figures 1-13 for the JRGXP paper (line charts).
 
 Just run::
 
@@ -16,11 +16,17 @@ each point is the mean of the first 100 remaining runs.
 Fig. 3 (MEC servers 10-30) is nested and paired: the first 10 servers, the
 IoTs and the tasks are identical for every server count (larger counts only
 add servers), every count runs the same seeds, and only seeds accepted at all
-counts are averaged.  Fig. 4 uses deadlines U[avg-0.5, avg+0.5] s and is
+counts are averaged.  Fig. 4 uses average deadlines 2, 4, 6, 8, and 10 s,
+drawn from U[avg-0.5, avg+0.5] s, with a 0.4 Mbit/s minimum IoT rate and
+unchanged cost weights. It is
 paired as well (same seeds at every deadline).
 Fig. 7 (experts stored per server) is also nested and paired: every average
 keeps the 10-14 deployment and only adds replicas, and every subtask has a
 fixed 12 gating candidates, so tasks are identical across the x values.
+Fig. 12 plots the RSMA group counts recorded by Fig. 2, so it needs no
+additional simulation runs.
+Fig. 13 plots the bandwidth costs recorded by Fig. 4 against the same
+deadlines, so it also needs no additional simulation runs.
 
 Every attempt is saved immediately; running the same command again continues
 an unfinished run.  Options: --runs N (simulation), --plot-runs N (0 = all),
@@ -85,6 +91,15 @@ def _half_range(avg: float) -> tuple[float, float]:
     return (float(avg) - 0.5, float(avg) + 0.5)
 
 
+def _set_deadline_sensitivity(config: ExperimentConfig, average: float) -> ExperimentConfig:
+    """Set the deadline range and minimum IoT rate for Figure 4."""
+    return replace(
+        config,
+        task_deadline_seconds_range=_half_range(average),
+        min_rate=0.4e6,
+    )
+
+
 NESTED_BASE_SERVERS = 10
 
 
@@ -137,6 +152,21 @@ def _set_dag_nodes(config: ExperimentConfig, nodes: int) -> ExperimentConfig:
     return replace(config, common_dag_spec=replace(spec, num_nodes=int(nodes), branch_length_range=(low, high)))
 
 
+def _set_required_features_per_task(config: ExperimentConfig, average: float) -> ExperimentConfig:
+    """Set the expected sum of required feature counts across one task's subtasks.
+
+    Each subtask independently draws an integer count from the configured
+    inclusive range.  Figure 9 uses targets whose per-subtask averages are
+    integers or half-integers, so a one- or two-value uniform range gives the
+    requested task-level average without changing the DAG generator.
+    """
+    per_subtask = float(average) / config.common_dag_spec.num_nodes
+    low, high = math.floor(per_subtask), math.ceil(per_subtask)
+    if low < 0 or not math.isclose((low + high) / 2, per_subtask):
+        raise ValueError("Task feature average must map to an integer or half-integer per subtask.")
+    return replace(config, iot_features_per_node_range=(low, high))
+
+
 @dataclass(frozen=True)
 class Figure:
     number: int
@@ -152,6 +182,8 @@ class Figure:
     paired: bool = False
     # Logarithmic y axis (e.g. bandwidth cost spanning several orders of magnitude).
     log_y: bool = False
+    # Reuse another figure's observations when the x sweep is identical.
+    source_figure_number: int | None = None
 
 
 FIGURES: tuple[Figure, ...] = (
@@ -160,12 +192,12 @@ FIGURES: tuple[Figure, ...] = (
            "total_cost", "Number of tasks", "Total cost"),
     Figure(2, "num_iots", (120, 140, 160, 180, 200),
            lambda c, v: replace(c, num_iot_devices=int(v)),
-           "bandwidth_cost", "Number of IoTs", "Bandwidth cost"),
+           "total_cost", "Number of IoTs", "Total cost"),
     Figure(3, "num_servers", (10, 15, 20, 25, 30),
            _set_servers_nested,
            "total_cost", "Number of MEC servers", "Total cost", paired=True),
-    Figure(4, "deadline", (2, 2.5, 3, 3.5, 4),
-           lambda c, v: replace(c, task_deadline_seconds_range=_half_range(v)),
+    Figure(4, "deadline_2to10_rate04", (2, 4, 6, 8, 10),
+           _set_deadline_sensitivity,
            "communication_cost", "Average deadline (s)",
            "Communication cost (bandwidth + forwarding)", paired=True),
     Figure(5, "max_group_size", (2, 3, 4, 5),
@@ -181,10 +213,10 @@ FIGURES: tuple[Figure, ...] = (
            lambda c, v: replace(c, iot_features_per_device_range=_avg_range(v)),
            "communication_cost", "Average number of features per IoT",
            "Communication cost (bandwidth + forwarding)"),
-    Figure(9, "required_features", (10, 15, 20, 25, 30),
-           lambda c, v: replace(c, iot_features_per_node_range=_avg_range(v)),
-           "total_cost", "Average number of required features per subtask", "Total cost"),
-    Figure(10, "shared_kinds", (0, 2, 4, 6, 8, 10),
+    Figure(9, "required_features_per_task", (10, 15, 20, 25, 30),
+           _set_required_features_per_task,
+           "total_cost", "Average number of required features per task", "Total cost"),
+    Figure(10, "shared_kinds", (0, 2, 4, 6, 8),
            lambda c, v: replace(c, shared_subtask_kind_count=int(v)),
            "total_cost", "Number of shared subtasks (kinds)", "Total cost"),
 )
@@ -193,6 +225,14 @@ FIGURES = FIGURES + (
            lambda c, v: replace(c, max_group_size=int(v)),
            "multi_groups", r"Maximum group size $N_{th}$",
            "Number of groups $-$ number of single-IoT groups"),
+    Figure(12, "num_iots_rsma_groups", (120, 140, 160, 180, 200),
+           lambda c, v: replace(c, num_iot_devices=int(v)),
+           "num_groups", "Number of IoTs", "Number of RSMA groups",
+           source_figure_number=2),
+    Figure(13, "deadline_bandwidth", (2, 4, 6, 8, 10),
+           _set_deadline_sensitivity,
+           "bandwidth_cost", "Average deadline (s)", "Bandwidth cost",
+           paired=True, source_figure_number=4),
 )
 FIGURE_BY_NUMBER = {figure.number: figure for figure in FIGURES}
 
@@ -430,7 +470,8 @@ def _select_rows(figure: Figure, rows: list[dict]) -> tuple[list[dict], list[dic
 
 def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
     """Draw one line chart (mean of accepted runs per x) and return summary rows."""
-    rows = _rows(_figure_dir(run_dir, figure))
+    source = FIGURE_BY_NUMBER[figure.source_figure_number] if figure.source_figure_number else figure
+    rows = _rows(_figure_dir(run_dir, source))
     if not rows:
         return []
     rows, removed = _select_rows(figure, rows)
@@ -547,14 +588,21 @@ def main() -> None:
         "seeds": "dag_seed = 42 + attempt-1, network_seed = 1 + attempt-1",
         "power_allocation": "overlap",
         "fig3": "nested servers (base 10), paired seeds",
-        "fig4_deadline": "U[avg-0.5, avg+0.5] s, communication cost, paired seeds",
+        "fig4_deadline": "average 2,4,6,8,10 s; U[avg-0.5,avg+0.5] s; min_rate=0.4e6; unchanged cost weights; communication cost; paired seeds",
         "fig7": "nested storage (base 10-14), 12 gating candidates, paired seeds",
+        "fig12": "RSMA group counts from fig2 observations; no additional simulation",
+        "fig13": "bandwidth costs from fig4 observations; no additional simulation",
     }, indent=2), encoding="utf-8")
 
     workers = args.workers or max(1, min(10, (os.cpu_count() or 2) - 1))
-    workers = min(workers, len(figures))
-    jobs = [(figure.number, args.runs, args.max_attempts, str(run_dir), args.quick) for figure in figures]
-    print(f"{len(figures)} figures, {workers} parallel processes, {args.runs} accepted runs per point.")
+    simulation_numbers = list(dict.fromkeys(
+        figure.source_figure_number or figure.number for figure in figures
+    ))
+    workers = min(workers, len(simulation_numbers))
+    jobs = [(number, args.runs, args.max_attempts, str(run_dir), args.quick)
+            for number in simulation_numbers]
+    print(f"{len(figures)} figures from {len(jobs)} simulation sweeps, "
+          f"{workers} parallel processes, {args.runs} accepted runs per point.")
     print(f"Progress of each figure: {run_dir}/figXX_*/progress.log")
     started = time.time()
     if workers == 1:

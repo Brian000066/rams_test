@@ -523,7 +523,13 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
     if figure.log_y:
         axis.set_yscale("log")
     axis.set_xlabel(figure.x_label)
-    axis.set_ylabel(figure.y_label)
+    ylabel_text = {
+        "Communication cost (bandwidth + forwarding)":
+            "Communication cost\n(bandwidth + forwarding)",
+        "Number of groups $-$ number of single-IoT groups":
+            "Number of groups $-$\nnumber of single-IoT groups",
+    }.get(figure.y_label, figure.y_label)
+    axis.set_ylabel(ylabel_text)
     axis.set_xticks(list(figure.values))
     axis.grid(True, linestyle="--", color="gray", alpha=0.5)
     axis.tick_params(direction="out", length=4, width=1.2)
@@ -531,7 +537,15 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
         tick.set_fontweight("bold")
     axis.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False,
                 handlelength=2.6, columnspacing=1.2, handletextpad=0.4, borderaxespad=0.2)
+    # Keep vertical titles within the axes so they clear the legend and x-axis label.
     fig.tight_layout()
+    fig.canvas.draw()
+    ylabel = axis.yaxis.label
+    while (ylabel.get_window_extent(renderer=fig.canvas.get_renderer()).height > axis.bbox.height * 0.9
+           and ylabel.get_fontsize() > 10):
+        ylabel.set_fontsize(ylabel.get_fontsize() - 1)
+        fig.tight_layout()
+        fig.canvas.draw()
     fig.savefig(figure_dir / f"fig{figure.number:02d}_{figure.key}.png", dpi=200)
     plt.close(fig)
     return summary
@@ -568,7 +582,7 @@ def _latest_unfinished(root: Path) -> Path | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs", type=int, default=300, help="accepted runs per x value (default 300)")
+    parser.add_argument("--runs", type=int, default=30, help="accepted runs per x value (default 30)")
     parser.add_argument("--max-attempts", type=int, default=5000, help="attempt limit per x value")
     parser.add_argument("--figures", default="all", help="e.g. 1,2,5 (default: all)")
     parser.add_argument("--workers", type=int, default=0,
@@ -581,8 +595,8 @@ def main() -> None:
                         help="when plotting, keep all runs (by default runs where any method exceeds "
                              "--outlier-factor x its median are dropped)")
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
-    parser.add_argument("--plot-runs", type=int, default=100,
-                        help="when plotting, average the first N non-outlier runs per x value (default 100; 0 = all)")
+    parser.add_argument("--plot-runs", type=int, default=10,
+                        help="when plotting, average the first N non-outlier runs per x value (default 10; 0 = all)")
     args = parser.parse_args()
     PLOT_OPTIONS.update(
         drop_outliers=not args.keep_outliers,

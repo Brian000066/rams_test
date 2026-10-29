@@ -27,6 +27,10 @@ Fig. 12 plots the RSMA group counts recorded by Fig. 2, so it needs no
 additional simulation runs.
 Fig. 13 plots the bandwidth costs recorded by Fig. 4 against the same
 deadlines, so it also needs no additional simulation runs.
+Fig. 14 plots the task finish rate (fraction of tasks whose finish time meets
+their deadline, i.e. no C1 deadline violation) against average deadlines
+0.75-2 s.  Every attempt is recorded (violations allowed); each method runs on its
+own, and a method that cannot produce a schedule counts as finish rate 0.
 
 Every attempt is saved immediately; running the same command again continues
 an unfinished run.  Options: --runs N (simulation), --plot-runs N (0 = all),
@@ -39,6 +43,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import math
 import os
 import time
@@ -55,6 +60,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from config import ExperimentConfig  # noqa: E402
+import utils.formulation as utils_formulation  # noqa: E402
 from experiment_runner import (  # noqa: E402
     METHOD_DISPLAY_NAMES,
     generate_task_graphs,
@@ -203,6 +209,8 @@ class Figure:
     log_y: bool = False
     # Reuse another figure's observations when the x sweep is identical.
     source_figure_number: int | None = None
+    # Record every attempt that runs (violations allowed), e.g. for finish rate.
+    accept_all: bool = False
 
 
 FIGURES: tuple[Figure, ...] = (
@@ -252,6 +260,10 @@ FIGURES = FIGURES + (
            _set_deadline_sensitivity,
            "bandwidth_cost", "Average deadline (s)", "Bandwidth cost",
            paired=True, source_figure_number=4),
+    Figure(14, "deadline_finish_rate", (0.75, 1.0, 1.25, 1.5, 1.75, 2.0),
+           _set_deadline_sensitivity,
+           "finish_rate", "Average deadline (s)", "Task finish rate",
+           paired=True, accept_all=True),
 )
 FIGURE_BY_NUMBER = {figure.number: figure for figure in FIGURES}
 
@@ -259,12 +271,29 @@ FIELDS = (
     "figure", "key", "x", "attempt", "accepted_index", "dag_seed", "network_seed",
     "method_key", "total_cost", "activation_cost", "bandwidth_cost",
     "forwarding_cost", "inference_cost", "communication_cost",
-    "num_groups", "single_groups", "multi_groups",
+    "num_groups", "single_groups", "multi_groups", "finish_rate",
 )
+METHOD_FLAGS = (
+    "run_hybrid_topk_gssgd_backhaul",
+    "run_hybrid_topk_location_aware_backhaul",
+    "run_wdmoe_gssgd",
+    "run_wdmoe_location_aware",
+    "run_our_similarity_aware_topk_backhaul",
+)
+DEADLINE_VIOLATION = re.compile(r"C1 deadline: task (\S+) finish")
 ATTEMPT_FIELDS = ("figure", "key", "x", "attempt", "accepted", "seconds", "violations")
 
 
-def _record(result: Any) -> dict[str, float]:
+def _record(result: Any, num_tasks: int | None = None) -> dict[str, float]:
+    if result is None:  # the method could not produce a schedule
+        return {"finish_rate": 0.0}
+    late_tasks = {
+        match.group(1)
+        for violation in (getattr(result, "violations", []) or [])
+        for match in [DEADLINE_VIOLATION.match(str(violation))]
+        if match
+    }
+    finish_rate = 1.0 - len(late_tasks) / num_tasks if num_tasks else float("nan")
     bandwidth = float(getattr(result, "bandwidth_cost", 0.0))
     forwarding = float(getattr(result, "forwarding_cost", 0.0))
     group_sizes = [
@@ -284,6 +313,7 @@ def _record(result: Any) -> dict[str, float]:
         "num_groups": num_groups,
         "single_groups": single_groups,
         "multi_groups": num_groups - single_groups,
+        "finish_rate": finish_rate,
     }
 
 
@@ -357,18 +387,44 @@ def run_figure(job: tuple[int, int, int, str, bool]) -> str:
                     if row["accepted"] == "True":
                         accepted_attempts.setdefault(float(row["x"]), set()).add(int(row["attempt"]))
 
+        # Fig. 14 only: late tasks are recorded as deadline misses instead of
+        # aborting the method (see utils.formulation.SOFT_DEADLINE).
+        utils_formulation.SOFT_DEADLINE = figure.accept_all
+
         def one_attempt(value: float, attempt: int) -> bool:
             config = figure.apply(base, value)
             seeds = resolve_run_seeds(config, run_index=attempt - 1)
             start = time.time()
-            try:
-                graphs = generate_task_graphs(config, seeds, verbose=False, export_artifacts=False)
-                results = run_enabled_methods(config, graphs, seeds, print_details=False, show_plot=False)
-                violations = {k: len(getattr(r, "violations", []) or []) for k, r in results.items()}
-                ok = len(results) == 5 and all(v == 0 for v in violations.values())
-            except Exception as error:  # infeasible sample: reject it
-                results, ok = {}, False
-                violations = {"error": str(error)[:200]}
+            if figure.accept_all:
+                # Run each method on its own so that one infeasible method
+                # (finish rate 0) does not discard the others.
+                try:
+                    graphs = generate_task_graphs(config, seeds, verbose=False, export_artifacts=False)
+                except Exception as error:
+                    results, ok = {}, False
+                    violations = {"error": str(error)[:200]}
+                else:
+                    results, violations = {}, {}
+                    for flag in METHOD_FLAGS:
+                        key = flag[len("run_"):]
+                        only = replace(config, **{f: f == flag for f in METHOD_FLAGS})
+                        try:
+                            out = run_enabled_methods(only, graphs, seeds, print_details=False, show_plot=False)
+                            results[key] = out.get(key)
+                            violations[key] = len(getattr(results[key], "violations", []) or [])
+                        except Exception as error:
+                            results[key] = None
+                            violations[key] = "error: " + str(error)[:120]
+                    ok = len(results) == 5
+            else:
+                try:
+                    graphs = generate_task_graphs(config, seeds, verbose=False, export_artifacts=False)
+                    results = run_enabled_methods(config, graphs, seeds, print_details=False, show_plot=False)
+                    violations = {k: len(getattr(r, "violations", []) or []) for k, r in results.items()}
+                    ok = len(results) == 5 and all(v == 0 for v in violations.values())
+                except Exception as error:  # infeasible sample: reject it
+                    results, ok = {}, False
+                    violations = {"error": str(error)[:200]}
             if ok:
                 accepted_attempts.setdefault(float(value), set()).add(attempt)
                 for method_key, result in results.items():
@@ -376,7 +432,7 @@ def run_figure(job: tuple[int, int, int, str, bool]) -> str:
                         "figure": figure.number, "key": figure.key, "x": value,
                         "attempt": attempt, "accepted_index": len(accepted_attempts[float(value)]),
                         "dag_seed": seeds.dag_seed, "network_seed": seeds.network_seed,
-                        "method_key": method_key, **_record(result),
+                        "method_key": method_key, **_record(result, config.num_dags),
                     })
             att_writer.writerow({
                 "figure": figure.number, "key": figure.key, "x": value,
@@ -454,7 +510,7 @@ def _select_rows(figure: Figure, rows: list[dict]) -> tuple[list[dict], list[dic
         by_x.setdefault(float(row["x"]), {}).setdefault(int(row["attempt"]), []).append(row)
     for x, attempts in by_x.items():
         flagged: set[int] = set()
-        if PLOT_OPTIONS["drop_outliers"]:
+        if PLOT_OPTIONS["drop_outliers"] and figure.metric != "finish_rate":
             medians = {}
             for method_key in METHOD_ORDER:
                 values = [
@@ -522,6 +578,8 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
                       markersize=9, label=PLOT_LABELS.get(method_key, METHOD_DISPLAY_NAMES.get(method_key, method_key)))
     if figure.log_y:
         axis.set_yscale("log")
+    if figure.metric == "finish_rate":
+        axis.set_ylim(0.0, 1.05)
     axis.set_xlabel(figure.x_label)
     ylabel_text = {
         "Communication cost (bandwidth + forwarding)":

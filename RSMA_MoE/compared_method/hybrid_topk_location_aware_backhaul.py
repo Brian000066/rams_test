@@ -16,6 +16,7 @@ if str(BASE_DIR) not in sys.path:
 
 from rsma_integration import build_scheduler_inputs  # noqa: E402
 from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
+import utils.formulation as formulation_module  # noqa: E402
 from utils.formulation import (  # noqa: E402
     AssignmentKey,
     DeviceId,
@@ -885,6 +886,8 @@ class ChainedComparisonPipeline:
                     - self.evaluator.group_feature_volume(group)
                     / self.evaluator.wired_rate(group.server_id, target_server),
                 )
+        if remaining <= 0.0 and formulation_module.SOFT_DEADLINE:
+            remaining = self.evaluator.bandwidth_time_budget()
         if remaining <= 0.0:
             raise InfeasibleBandwidthBudget(
                 f"RSMA group {group.server_id}:{group.id} cannot serve "
@@ -1311,6 +1314,8 @@ class ChainedComparisonPipeline:
                     latest_start.get((task_id, subtask_id), task.deadline)
                     - backhaul_time
                 )
+                if remaining <= 0.0 and formulation_module.SOFT_DEADLINE:
+                    remaining = self.evaluator.bandwidth_time_budget()
                 if remaining <= 0.0:
                     raise InfeasibleBandwidthBudget(
                         f"RSMA group {group.server_id}:{group.id} cannot serve "

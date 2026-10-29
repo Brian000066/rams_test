@@ -181,10 +181,10 @@ class ExperimentConfig:
     wired_edge_weight_range: tuple[float, float] = (1.0, 3.0) #8-10
     wavelength: float = 0.125
     # Paper: 16 KiB per feature.
-    default_feature_bits: float = 64.0 * 1024.0 * 8.0
+    default_feature_bits: float = 16.0 * 1024.0 * 8.0
     feature_bits_range: tuple[float, float] = (
-        64.0 * 1024.0 * 8.0,
-        64.0 * 1024.0 * 8.0,
+        16.0 * 1024.0 * 8.0,
+        16.0 * 1024.0 * 8.0,
     )
     # Paper PSDs, converted from dBm/Hz to W/Hz.
     noise_power: float = NOISE_PSD_W_PER_HZ
@@ -195,7 +195,7 @@ class ExperimentConfig:
     min_rate: float = 0.4e6
 
     # Objective unit costs from the simulation setup.
-    c_bw: float = 0.0000038
+    c_bw: float = 0.00000038
     c_act: float = 0.3
     c_fwd: float = 1.0
     # Cost per MFLOP-equivalent expert complexity (parameter_count / 1e6).

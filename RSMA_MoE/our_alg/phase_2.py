@@ -15,6 +15,7 @@ from compared_method.hybrid_topk_location_aware_backhaul import (
     ChainedBackhaulDecision,
     ChainedPipelineResult,
 )
+import utils.formulation as formulation_module
 from utils.formulation import (
     AssignmentKey,
     DeviceId,
@@ -180,7 +181,7 @@ class Phase2GroupingBackhaulMixin:
                 "localization_acceptance_threshold": 1.0,
                 "pruning_rule": "remove selected IoTs whose destination set is empty",
                 "compatibility_formula": (
-                    "min_s distance(n,m)*(2-cos(phi[n,s]-phi[m,s])), phi[n,s]=2*pi*d[n,s]*cos(theta[n,s])/lambda"
+                    "min_s distance(n,m)*(1-cos(phi[n,s]-phi[m,s])), phi[n,s]=2*pi*d[n,s]*cos(theta[n,s])/lambda"
                 ),
                 "utility_formula": (
                     "c_bw*(sum singleton bandwidth-group bandwidth)"
@@ -632,7 +633,7 @@ class Phase2GroupingBackhaulMixin:
         for server_id in common_servers:
             first_phase = self._cfrg_db_phase(first, server_id)
             second_phase = self._cfrg_db_phase(second, server_id)
-            value = distance * (2.0 - math.cos(first_phase - second_phase))
+            value = distance * (1.0 - math.cos(first_phase - second_phase))
             candidates.append((value, server_id))
         return min(candidates, key=lambda item: (item[0], item[1]))
 
@@ -974,6 +975,8 @@ class Phase2GroupingBackhaulMixin:
                 budgets.append(remaining)
             time_budget = min(budgets)
         else:
+            time_budget = self.evaluator.bandwidth_time_budget()
+        if time_budget <= 0.0 and formulation_module.SOFT_DEADLINE:
             time_budget = self.evaluator.bandwidth_time_budget()
         if time_budget <= 0.0:
             return None

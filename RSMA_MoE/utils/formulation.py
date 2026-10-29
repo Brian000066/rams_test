@@ -17,6 +17,14 @@ FeatureDemandKey = Tuple[TaskId, SubtaskId, ServerId, str]
 FeatureSource = Tuple[ServerId, GroupId]
 
 
+# Task finish-rate experiments only (run_ten_figures Fig. 14): when True, a group
+# whose remaining uplink time is non-positive gets the fallback time budget
+# instead of raising, so the affected task just misses its deadline and is
+# reported as a C1 deadline violation.  Default False keeps the original
+# behaviour for every other experiment.
+SOFT_DEADLINE = False
+
+
 class InfeasibleBandwidthBudget(ValueError):
     """Raised when an RSMA demand cannot meet its uplink time/rate budget."""
 
@@ -525,6 +533,8 @@ class FormulationEvaluator:
                         target_server,
                     )
                 remaining = latest_start.get((task_id, subtask_id), task.deadline) - backhaul_time
+                if remaining <= 0.0 and SOFT_DEADLINE:
+                    remaining = fallback
                 if remaining <= 0.0:
                     raise InfeasibleBandwidthBudget(
                         f"RSMA group {group.server_id}:{group.id} cannot serve "

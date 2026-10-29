@@ -195,7 +195,7 @@ class ExperimentConfig:
     min_rate: float = 0.4e6
 
     # Objective unit costs from the simulation setup.
-    c_bw: float = 0.00000038
+    c_bw: float = 0.0000038
     c_act: float = 0.3
     c_fwd: float = 1.0
     # Cost per MFLOP-equivalent expert complexity (parameter_count / 1e6).

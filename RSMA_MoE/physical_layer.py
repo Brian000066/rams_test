@@ -9,7 +9,7 @@ def dbm_per_hz_to_watts_per_hz(value: float) -> float:
 
 
 NOISE_PSD_W_PER_HZ = dbm_per_hz_to_watts_per_hz(-174.0)
-TX_PSD_W_PER_HZ = dbm_per_hz_to_watts_per_hz(-110.0)   #1
+TX_PSD_W_PER_HZ = dbm_per_hz_to_watts_per_hz(1.0)
 
 
 def spectral_efficiency(sinr_linear: float) -> float:

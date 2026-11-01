@@ -27,6 +27,10 @@ Fig. 12 plots the RSMA group counts recorded by Fig. 2, so it needs no
 additional simulation runs.
 Fig. 13 plots the bandwidth costs recorded by Fig. 4 against the same
 deadlines, so it also needs no additional simulation runs.
+Fig. 11 (number of distinct IoTs used) and Fig. 15 (communication cost =
+bandwidth + forwarding) plot values recorded by Fig. 9 against the same
+average numbers of required features per task (40-80), so they need no
+additional simulation runs.
 Fig. 14 plots the task finish rate (fraction of tasks whose finish time meets
 their deadline, i.e. no C1 deadline violation) against average deadlines
 0.75-2 s.  Every attempt is recorded (violations allowed); each method runs on its
@@ -87,15 +91,15 @@ METHOD_STYLE = {
     "our_similarity_aware_topk_backhaul": ("#4169E1", "^", ":"),
 }
 PLOT_LABELS = {
-    "hybrid_topk_gssgd_backhaul": "Top-K+CSSGD",
-    "hybrid_topk_location_aware_backhaul": "Top-K+Location-aware",
+    "hybrid_topk_gssgd_backhaul": "Top-k+CSSGD",
+    "hybrid_topk_location_aware_backhaul": "Top-k+Location-aware",
     "wdmoe_gssgd": "WDMoE+CSSGD",
     "wdmoe_location_aware": "WDMoE+Location-aware",
     "our_similarity_aware_topk_backhaul": "RESG-GoT",
 }
 plt.rcParams.update({
     "font.family": "serif",
-    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "font.serif": ["Times New Roman", "Times", "Liberation Serif", "DejaVu Serif"],
     "mathtext.fontset": "stix",
     "axes.labelsize": 16,
     "axes.labelweight": "bold",
@@ -248,10 +252,11 @@ FIGURES: tuple[Figure, ...] = (
            "total_cost", "Number of shared subtasks", "Total cost"),
 )
 FIGURES = FIGURES + (
-    Figure(11, "multi_iot_groups", (2, 3, 4, 5, 6),
-           lambda c, v: replace(c, max_group_size=int(v)),
-           "multi_groups", r"Maximum group size $N_{th}$",
-           "Number of groups $-$ number of single-IoT groups"),
+    Figure(11, "required_features_iots_used", (40, 50, 60, 70, 80),
+           _set_required_features_per_task,
+           "num_iots_used", "Average number of required features per task",
+           "Number of IoTs used",
+           source_figure_number=9),
     Figure(12, "num_iots_rsma_groups", (120, 140, 160, 180, 200),
            lambda c, v: replace(c, num_iot_devices=int(v)),
            "num_groups", "Number of IoTs", "Number of RSMA groups",
@@ -264,6 +269,11 @@ FIGURES = FIGURES + (
            _set_deadline_sensitivity,
            "finish_rate", "Average deadline (s)", "Task finish rate",
            paired=True, accept_all=True),
+    Figure(15, "required_features_comm", (40, 50, 60, 70, 80),
+           _set_required_features_per_task,
+           "communication_cost", "Average number of required features per task",
+           "Communication cost (bandwidth + forwarding)",
+           source_figure_number=9),
 )
 FIGURE_BY_NUMBER = {figure.number: figure for figure in FIGURES}
 
@@ -272,6 +282,7 @@ FIELDS = (
     "method_key", "total_cost", "activation_cost", "bandwidth_cost",
     "forwarding_cost", "inference_cost", "communication_cost",
     "num_groups", "single_groups", "multi_groups", "finish_rate",
+    "num_iots_used",
 )
 METHOD_FLAGS = (
     "run_hybrid_topk_gssgd_backhaul",
@@ -303,6 +314,13 @@ def _record(result: Any, num_tasks: int | None = None) -> dict[str, float]:
     ]
     num_groups = len(group_sizes)
     single_groups = sum(1 for size in group_sizes if size == 1)
+    # Distinct IoTs that upload in any RSMA group (selected IoTs).
+    num_iots_used = len({
+        device
+        for members_list in (getattr(result, "rsma_groups", {}) or {}).values()
+        for members in members_list
+        for device in members
+    })
     return {
         "total_cost": float(getattr(result, "total_cost", 0.0)),
         "activation_cost": float(getattr(result, "activation_cost", 0.0)),
@@ -314,6 +332,7 @@ def _record(result: Any, num_tasks: int | None = None) -> dict[str, float]:
         "single_groups": single_groups,
         "multi_groups": num_groups - single_groups,
         "finish_rate": finish_rate,
+        "num_iots_used": num_iots_used,
     }
 
 
@@ -549,12 +568,20 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
     rows = _rows(_figure_dir(run_dir, source))
     if not rows:
         return []
+    # Runs recorded before a metric existed (e.g. num_iots_used) lack that column.
+    rows = [row for row in rows if row.get(figure.metric) not in (None, "")]
+    if not rows:
+        print(f"Fig {figure.number}: no '{figure.metric}' values in "
+              f"{_figure_dir(run_dir, source).name}; skipped "
+              f"(rerun Fig {source.number} with --new to record it).")
+        return []
     rows, removed = _select_rows(figure, rows)
     PLOT_OPTIONS.setdefault("removed", []).extend(removed)
     figure_dir = run_dir / "figures"
     figure_dir.mkdir(exist_ok=True)
     summary = []
-    fig, axis = plt.subplots(figsize=(6.4, 4.4))
+    # Wide, short panel (SIoT-paper style); every figure is exported on its own.
+    fig, axis = plt.subplots(figsize=(6.4, 3.4))
     for method_key in METHOD_ORDER:
         xs, ys = [], []
         for value in figure.values:
@@ -654,7 +681,7 @@ def main() -> None:
                              "--outlier-factor x its median are dropped)")
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
     parser.add_argument("--plot-runs", type=int, default=15,
-                        help="when plotting, average the first N non-outlier runs per x value (default 10; 0 = all)")
+                        help="when plotting, average the first N non-outlier runs per x value (default 15; 0 = all)")
     args = parser.parse_args()
     PLOT_OPTIONS.update(
         drop_outliers=not args.keep_outliers,
@@ -687,6 +714,8 @@ def main() -> None:
         "fig7": "nested storage (base 10-14), 12 gating candidates, paired seeds",
         "fig12": "RSMA group counts from fig2 observations; no additional simulation",
         "fig13": "bandwidth costs from fig4 observations; no additional simulation",
+        "fig11": "number of distinct IoTs used from fig9 observations (required features per task 40-80); no additional simulation",
+        "fig15": "communication cost from fig9 observations; no additional simulation",
     }, indent=2), encoding="utf-8")
 
     workers = args.workers or max(1, min(10, (os.cpu_count() or 2) - 1))

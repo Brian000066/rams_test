@@ -87,8 +87,8 @@ METHOD_STYLE = {
     "our_similarity_aware_topk_backhaul": ("#4169E1", "^", ":"),
 }
 PLOT_LABELS = {
-    "hybrid_topk_gssgd_backhaul": "Top-k+CSSGD",
-    "hybrid_topk_location_aware_backhaul": "Top-k+Location-aware",
+    "hybrid_topk_gssgd_backhaul": "Top-K+CSSGD",
+    "hybrid_topk_location_aware_backhaul": "Top-K+Location-aware",
     "wdmoe_gssgd": "WDMoE+CSSGD",
     "wdmoe_location_aware": "WDMoE+Location-aware",
     "our_similarity_aware_topk_backhaul": "RESG-GoT",
@@ -245,7 +245,7 @@ FIGURES: tuple[Figure, ...] = (
            "total_cost", "Average number of required features per task", "Total cost"),
     Figure(10, "shared_kinds", (0, 2, 4, 6, 8),
            lambda c, v: replace(c, shared_subtask_kind_count=int(v)),
-           "total_cost", "Number of shared subtasks (kinds)", "Total cost"),
+           "total_cost", "Number of shared subtasks", "Total cost"),
 )
 FIGURES = FIGURES + (
     Figure(11, "multi_iot_groups", (2, 3, 4, 5, 6),

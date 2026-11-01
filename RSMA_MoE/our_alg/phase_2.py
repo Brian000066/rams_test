@@ -175,8 +175,8 @@ class Phase2GroupingBackhaulMixin:
                     "([1+c_bw*b(n)+c_fwd*sum_s omega_net[o_n,s]]*(1+delta_n))"
                 ),
                 "localization_index_formula": (
-                    "normalized_hop_reduction / "
-                    "(normalized_c_bw_b(n)*(1+normalized_delta_n)+epsilon)"
+                    "[c_fwd*(sum_m sum_s omega_net before - after adding n)]^+ / "
+                    "(c_bw*b(n)*(1+delta_n)+epsilon)"
                 ),
                 "localization_acceptance_threshold": 1.0,
                 "pruning_rule": "remove selected IoTs whose destination set is empty",
@@ -431,46 +431,17 @@ class Phase2GroupingBackhaulMixin:
             if not trials:
                 break
 
-            hop_scale = max(
-                current_hops,
-                max(item["hop_reduction"] for item in trials),
-                epsilon,
-            )
-            finite_bandwidth_costs = [
-                item["bandwidth_cost"]
-                for item in trials
-                if math.isfinite(item["bandwidth_cost"])
-            ]
-            bandwidth_scale = max(finite_bandwidth_costs, default=epsilon)
-            finite_incompatibilities = [
-                item["incompatibility"]
-                for item in trials
-                if math.isfinite(item["incompatibility"])
-            ]
-            incompatibility_scale = max(finite_incompatibilities, default=1.0)
-            if incompatibility_scale <= epsilon:
-                incompatibility_scale = 1.0
-
+            # Paper: I_loc(n) = [feature backhaul cost before adding n - after]^+
+            #                 / (c_bw * b(n) * (1 + delta_n) + epsilon)   (no normalization)
             for item in trials:
-                normalized_hops = item["hop_reduction"] / hop_scale
-                normalized_bandwidth = item["bandwidth_cost"] / max(
-                    bandwidth_scale,
-                    epsilon,
-                )
-                normalized_incompatibility = (
-                    item["incompatibility"] / incompatibility_scale
-                    if math.isfinite(item["incompatibility"])
-                    else float("inf")
-                )
+                backhaul_saving = self.config.c_fwd * item["hop_reduction"]
                 denominator = (
-                    normalized_bandwidth * (1.0 + normalized_incompatibility)
+                    item["bandwidth_cost"] * (1.0 + item["incompatibility"])
                     + epsilon
                 )
-                item["normalized_hop_reduction"] = normalized_hops
-                item["normalized_bandwidth_cost"] = normalized_bandwidth
-                item["normalized_incompatibility"] = normalized_incompatibility
+                item["backhaul_saving"] = backhaul_saving
                 item["localization_index"] = self._updated_safe_ratio(
-                    normalized_hops,
+                    backhaul_saving,
                     denominator,
                 )
 
@@ -513,11 +484,7 @@ class Phase2GroupingBackhaulMixin:
                     "singleton_bandwidth": best["singleton_bandwidth"],
                     "bandwidth_cost": best["bandwidth_cost"],
                     "incompatibility": self._updated_json_number(best["incompatibility"]),
-                    "normalized_hop_reduction": best["normalized_hop_reduction"],
-                    "normalized_bandwidth_cost": best["normalized_bandwidth_cost"],
-                    "normalized_incompatibility": self._updated_json_number(
-                        best["normalized_incompatibility"]
-                    ),
+                    "backhaul_saving": best["backhaul_saving"],
                     "localization_index": best["localization_index"],
                 }
             )
@@ -642,10 +609,24 @@ class Phase2GroupingBackhaulMixin:
         selected: Sequence[DeviceId],
     ) -> tuple[list[DeviceId], dict[str, Any]]:
         devices = sorted(set(selected), key=self._id_sort_key)
+        # Cluster the selected IoTs by their preliminary uplink server
+        # o_n = argmax_{s in S_n} |h_{n,s}|^2.  The MST/BFS is built inside each
+        # cluster only, so IoTs sharing the same best-channel server become
+        # consecutive in the ordering.  o_n is used only for the ordering; the
+        # actual uplink server o(g) of a candidate group is still chosen by the
+        # DP over the members' common reachable servers.
+        origin: Dict[DeviceId, ServerId | None] = {
+            device_id: self._updated_best_origin(device_id) for device_id in devices
+        }
         pair_values: Dict[Tuple[DeviceId, DeviceId], float] = {}
         pair_report: list[dict[str, Any]] = []
         for index, first in enumerate(devices):
             for second in devices[index + 1 :]:
+                same_cluster = (
+                    origin[first] is not None and origin[first] == origin[second]
+                )
+                if not same_cluster:
+                    continue
                 value, server_id = self._cfrg_pair_dissimilarity(first, second)
                 if value is not None:
                     pair_values[(first, second)] = value
@@ -653,13 +634,14 @@ class Phase2GroupingBackhaulMixin:
                     {
                         "first": first,
                         "second": second,
+                        "cluster": origin[first],
                         "dissimilarity": value,
                         "minimizing_server": server_id,
                     }
                 )
 
-        # Root score: mean pairwise incompatibility of each IoT to all other
-        # selected IoTs, taken from the full pairwise delta matrix before the
+        # Root score: mean pairwise incompatibility of each IoT to the other
+        # IoTs of its o_n cluster, taken from the full pairwise delta matrix before the
         # MST is built.  Pairs without a common reachable server have no delta
         # and are skipped; an IoT with no defined delta gets +inf.
         delta_sums: Dict[DeviceId, float] = {device_id: 0.0 for device_id in devices}
@@ -740,7 +722,12 @@ class Phase2GroupingBackhaulMixin:
                     queue.append(neighbor)
         return order, {
             "roots": roots,
-            "root_rule": "minimum mean pairwise delta (before MST)",
+            "clustering": "by preliminary uplink server o_n = argmax |h_{n,s}|^2",
+            "clusters": {
+                str(server_id): [d for d in devices if origin[d] == server_id]
+                for server_id in sorted({o for o in origin.values()}, key=str)
+            },
+            "root_rule": "minimum mean pairwise delta within the o_n cluster (before MST)",
             "root_mean_delta": {root: mean_delta[root] for root in roots},
             "traversal": "BFS",
             "pairwise_compatibility": pair_report,

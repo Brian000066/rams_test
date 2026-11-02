@@ -71,8 +71,11 @@ class ExperimentConfig:
         default_factory=lambda: DAGSpec(
             num_nodes=10,
             num_branches=(2,4),
-            branch_length_range=(1, 5),
-            depth=8,
+            # Branch mode: depth = branch length + source + sink, so (1, 4) gives
+            # a maximum depth of 6 (including the source and sink).  The depth
+            # field below is not read by the branch generator; kept consistent.
+            branch_length_range=(1, 4),
+            depth=6,
             max_width=5,
             edge_probability=0.2,
             allow_skip_edges=False,

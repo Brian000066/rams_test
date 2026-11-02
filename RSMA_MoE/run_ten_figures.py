@@ -172,13 +172,17 @@ def _set_experts_per_server(config: ExperimentConfig, avg: int) -> ExperimentCon
 
 
 def _set_dag_nodes(config: ExperimentConfig, nodes: int) -> ExperimentConfig:
-    """Subtasks per task.  The maximum branch length grows with the node count
-    (5 at 10 nodes, i.e. ceil(nodes / 2)) so that 2-4 branches can hold up to
-    30 nodes; 10 nodes keeps the default (1, 5)."""
+    """Subtasks per task.  The branch length range stays at the default (1, 4),
+    so every DAG keeps a maximum depth of 6 (including source and sink); larger
+    node counts get more branches instead (at least ceil((nodes - 2) / 4)).
+    10 nodes keeps the default 2-4 branches."""
     spec = config.common_dag_spec
-    low, high = spec.branch_length_range or (1, 5)
-    high = max(int(high), math.ceil(int(nodes) / 2))
-    return replace(config, common_dag_spec=replace(spec, num_nodes=int(nodes), branch_length_range=(low, high)))
+    low, high = spec.branch_length_range or (1, 4)
+    min_branches, max_branches = spec.num_branches if isinstance(spec.num_branches, tuple) else (2, 4)
+    needed = math.ceil((int(nodes) - 2) / int(high))
+    branches = (max(int(min_branches), needed), max(int(max_branches), needed + 2))
+    return replace(config, common_dag_spec=replace(
+        spec, num_nodes=int(nodes), branch_length_range=(low, high), num_branches=branches))
 
 
 def _set_required_features_per_task(config: ExperimentConfig, average: float) -> ExperimentConfig:
@@ -259,7 +263,7 @@ FIGURES = FIGURES + (
            source_figure_number=9),
     Figure(12, "num_iots_rsma_groups", (120, 140, 160, 180, 200),
            lambda c, v: replace(c, num_iot_devices=int(v)),
-           "num_groups", "Number of IoTs", "Number of RSMA groups",
+           "num_groups", "Number of IoTs", "RSMA groups",
            source_figure_number=2),
     Figure(13, "deadline_bandwidth", (2, 4, 6, 8, 10),
            _set_deadline_sensitivity,
@@ -272,7 +276,7 @@ FIGURES = FIGURES + (
     Figure(15, "required_features_comm", (40, 50, 60, 70, 80),
            _set_required_features_per_task,
            "communication_cost", "Average number of required features per task",
-           "Communication cost (bandwidth + forwarding)",
+           "Communication cost",
            source_figure_number=9),
 )
 FIGURE_BY_NUMBER = {figure.number: figure for figure in FIGURES}
@@ -667,8 +671,8 @@ def _latest_unfinished(root: Path) -> Path | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs", type=int, default=30, help="accepted runs per x value (default 30)")
-    parser.add_argument("--max-attempts", type=int, default=500, help="attempt limit per x value")
+    parser.add_argument("--runs", type=int, default=500, help="accepted runs per x value (default 500)")
+    parser.add_argument("--max-attempts", type=int, default=5000, help="attempt limit per x value")
     parser.add_argument("--figures", default="all", help="e.g. 1,2,5 (default: all)")
     parser.add_argument("--workers", type=int, default=0,
                         help="parallel processes (default: CPU cores - 1, at most 10)")
@@ -680,8 +684,8 @@ def main() -> None:
                         help="when plotting, keep all runs (by default runs where any method exceeds "
                              "--outlier-factor x its median are dropped)")
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
-    parser.add_argument("--plot-runs", type=int, default=15,
-                        help="when plotting, average the first N non-outlier runs per x value (default 15; 0 = all)")
+    parser.add_argument("--plot-runs", type=int, default=300,
+                        help="when plotting, average the first N non-outlier runs per x value (default 300; 0 = all)")
     args = parser.parse_args()
     PLOT_OPTIONS.update(
         drop_outliers=not args.keep_outliers,

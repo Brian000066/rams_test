@@ -499,6 +499,14 @@ def run_figure(job: tuple[int, int, int, str, bool]) -> str:
                 if accepted < runs:
                     log.write(f"WARNING: only {accepted}/{runs} accepted for x={value}\n")
     _plot_one(Path(run_dir_text), figure)
+    # Also draw the figures that reuse this sweep's observations (e.g. Fig. 12
+    # from Fig. 2) right away instead of waiting for every sweep to finish.
+    for derived in FIGURES:
+        if derived.source_figure_number == figure.number:
+            try:
+                _plot_one(Path(run_dir_text), derived)
+            except Exception as exc:  # never lose the sweep because of a plot
+                print(f"Fig {derived.number}: plot skipped ({exc})")
     return f"Fig {figure.number} done"
 
 

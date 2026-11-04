@@ -64,9 +64,9 @@ class Phase3RefinementPruningMixin:
         )
         context = self._scope_context()
         structures = list(self.phase1_report.get("shared_structures", []))
-        max_iterations = max(1, int(self.phase3_report.get("max_iterations", 2)))
-        max_joint = max(1, int(self.phase3_report.get("max_joint_assignments", 32)))
-        max_private = max(1, int(self.phase3_report.get("max_private_candidates", 48)))
+        max_iterations = max(1, int(self.phase3_report.get("max_iterations", 10**9)))
+        max_joint = max(1, int(self.phase3_report.get("max_joint_assignments", 10**9)))
+        max_private = max(1, int(self.phase3_report.get("max_private_candidates", 10**9)))
         accepted_moves: list[dict[str, Any]] = []
         trace_report: list[dict[str, Any]] = []
         candidate_evaluations = 0

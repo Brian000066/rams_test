@@ -519,7 +519,16 @@ def _rows(fig_dir: Path) -> list[dict]:
 
 
 # Plot options (set from the command line).
-PLOT_OPTIONS: dict[str, Any] = {"drop_outliers": True, "outlier_factor": 10.0, "runs": 100}
+PLOT_OPTIONS: dict[str, Any] = {"drop_outliers": True, "outlier_factor": 10.0, "runs": 100,
+                                "paper": False, "legend": True}
+# --paper: panels shaped like the SIoT paper's Fig. 5 (aspect ~1.64).  Include
+# each at width=0.49\linewidth (~1.69 in); it is scaled by 0.5, so the 13/12 pt
+# fonts print at ~6.5/6 pt, matching the reference figures.
+PAPER_SIZE = (3.4, 2.07)  # inches
+PAPER_RC = {
+    "axes.labelsize": 13, "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "legend.fontsize": 10, "axes.linewidth": 1.0,
+}
 
 
 def _select_rows(figure: Figure, rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -575,6 +584,13 @@ def _select_rows(figure: Figure, rows: list[dict]) -> tuple[list[dict], list[dic
 
 
 def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
+    if PLOT_OPTIONS.get("paper"):
+        with plt.rc_context(PAPER_RC):
+            return _plot_one_impl(run_dir, figure)
+    return _plot_one_impl(run_dir, figure)
+
+
+def _plot_one_impl(run_dir: Path, figure: Figure) -> list[dict]:
     """Draw one line chart (mean of accepted runs per x) and return summary rows."""
     source = FIGURE_BY_NUMBER[figure.source_figure_number] if figure.source_figure_number else figure
     rows = _rows(_figure_dir(run_dir, source))
@@ -589,11 +605,12 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
         return []
     rows, removed = _select_rows(figure, rows)
     PLOT_OPTIONS.setdefault("removed", []).extend(removed)
-    figure_dir = run_dir / "figures"
+    paper = bool(PLOT_OPTIONS.get("paper"))
+    figure_dir = run_dir / ("figures_paper" if paper else "figures")
     figure_dir.mkdir(exist_ok=True)
     summary = []
     # Wide, short panel (SIoT-paper style); every figure is exported on its own.
-    fig, axis = plt.subplots(figsize=(6.4, 3.4))
+    fig, axis = plt.subplots(figsize=PAPER_SIZE if paper else (6.4, 3.4))
     for method_key in METHOD_ORDER:
         xs, ys = [], []
         for value in figure.values:
@@ -613,8 +630,8 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
             })
         if xs:
             color, marker, line = METHOD_STYLE[method_key]
-            axis.plot(xs, ys, color=color, marker=marker, linestyle=line, linewidth=2,
-                      markersize=9, label=PLOT_LABELS.get(method_key, METHOD_DISPLAY_NAMES.get(method_key, method_key)))
+            axis.plot(xs, ys, color=color, marker=marker, linestyle=line,
+                      linewidth=1.5 if paper else 2, markersize=6 if paper else 9, label=PLOT_LABELS.get(method_key, METHOD_DISPLAY_NAMES.get(method_key, method_key)))
     if figure.log_y:
         axis.set_yscale("log")
     if figure.metric == "finish_rate":
@@ -629,23 +646,46 @@ def _plot_one(run_dir: Path, figure: Figure) -> list[dict]:
     axis.set_ylabel(ylabel_text)
     axis.set_xticks(list(figure.values))
     axis.grid(True, linestyle="--", color="gray", alpha=0.5)
-    axis.tick_params(direction="out", length=4, width=1.2)
+    axis.tick_params(direction="out", length=3 if paper else 4, width=1.0 if paper else 1.2)
     for tick in axis.get_xticklabels() + axis.get_yticklabels():
         tick.set_fontweight("bold")
-    axis.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False,
-                handlelength=2.6, columnspacing=1.2, handletextpad=0.4, borderaxespad=0.2)
+    if PLOT_OPTIONS.get("legend", True):
+        axis.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, frameon=False,
+                    handlelength=2.6, columnspacing=1.2, handletextpad=0.4, borderaxespad=0.2)
     # Keep vertical titles within the axes so they clear the legend and x-axis label.
     fig.tight_layout()
     fig.canvas.draw()
     ylabel = axis.yaxis.label
-    while (ylabel.get_window_extent(renderer=fig.canvas.get_renderer()).height > axis.bbox.height * 0.9
-           and ylabel.get_fontsize() > 10):
+    while (ylabel.get_window_extent(renderer=fig.canvas.get_renderer()).height > axis.bbox.height * (1.2 if paper else 0.9)
+           and ylabel.get_fontsize() > (6 if paper else 10)):
         ylabel.set_fontsize(ylabel.get_fontsize() - 1)
         fig.tight_layout()
         fig.canvas.draw()
-    fig.savefig(figure_dir / f"fig{figure.number:02d}_{figure.key}.png", dpi=200)
+    stem = figure_dir / f"fig{figure.number:02d}_{figure.key}"
+    fig.savefig(stem.with_suffix(".png"), dpi=600 if paper else 200)
+    if paper:
+        fig.savefig(stem.with_suffix(".pdf"))  # vector version for LaTeX
     plt.close(fig)
+    if paper and not PLOT_OPTIONS.get("legend", True):
+        _save_shared_legend(figure_dir)
     return summary
+
+
+def _save_shared_legend(figure_dir: Path) -> None:
+    """One legend strip shared by all panels (used with --no-legend)."""
+    if (figure_dir / "legend.pdf").exists():
+        return
+    handles = [
+        plt.Line2D([], [], color=c, marker=m, linestyle=ls, linewidth=1.5, markersize=6,
+                   label=PLOT_LABELS[key])
+        for key, (c, m, ls) in METHOD_STYLE.items()
+    ]
+    fig = plt.figure(figsize=(7.0, 0.4))
+    fig.legend(handles=handles, loc="center", ncol=len(handles), frameon=False,
+               handlelength=2.6, columnspacing=1.2, handletextpad=0.4)
+    fig.savefig(figure_dir / "legend.pdf", bbox_inches="tight")
+    fig.savefig(figure_dir / "legend.png", dpi=600, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot(run_dir: Path, figures: list[Figure]) -> None:
@@ -694,8 +734,14 @@ def main() -> None:
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
     parser.add_argument("--plot-runs", type=int, default=300,
                         help="when plotting, average the first N non-outlier runs per x value (default 300; 0 = all)")
+    parser.add_argument("--paper", action="store_true",
+                        help="draw print-size panels (3.4 x 1.9 in, PDF + 600-dpi PNG) into figures_paper/")
+    parser.add_argument("--no-legend", action="store_true",
+                        help="omit the per-panel legend (with --paper also writes a shared legend.pdf)")
     args = parser.parse_args()
     PLOT_OPTIONS.update(
+        paper=args.paper,
+        legend=not args.no_legend,
         drop_outliers=not args.keep_outliers,
         outlier_factor=args.outlier_factor,
         runs=(args.plot_runs or None),

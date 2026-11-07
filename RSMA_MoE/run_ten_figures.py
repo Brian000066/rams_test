@@ -719,8 +719,8 @@ def _latest_unfinished(root: Path) -> Path | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--runs", type=int, default=500, help="accepted runs per x value (default 500)")
-    parser.add_argument("--max-attempts", type=int, default=5000, help="attempt limit per x value")
+    parser.add_argument("--runs", type=int, default=20, help="accepted runs per x value (default 20)")
+    parser.add_argument("--max-attempts", type=int, default=50, help="attempt limit per x value")
     parser.add_argument("--figures", default="all", help="e.g. 1,2,5 (default: all)")
     parser.add_argument("--workers", type=int, default=0,
                         help="parallel processes (default: CPU cores - 1, at most 10)")
@@ -732,8 +732,8 @@ def main() -> None:
                         help="when plotting, keep all runs (by default runs where any method exceeds "
                              "--outlier-factor x its median are dropped)")
     parser.add_argument("--outlier-factor", type=float, default=10.0, help="outlier threshold (default 10 x median)")
-    parser.add_argument("--plot-runs", type=int, default=300,
-                        help="when plotting, average the first N non-outlier runs per x value (default 300; 0 = all)")
+    parser.add_argument("--plot-runs", type=int, default=5,
+                        help="when plotting, average the first N non-outlier runs per x value (default 5; 0 = all)")
     parser.add_argument("--paper", action="store_true",
                         help="draw print-size panels (3.4 x 1.9 in, PDF + 600-dpi PNG) into figures_paper/")
     parser.add_argument("--no-legend", action="store_true",

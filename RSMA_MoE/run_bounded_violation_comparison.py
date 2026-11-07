@@ -461,7 +461,7 @@ def run_bounded_comparison(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target-runs", type=int, default=10)
+    parser.add_argument("--target-runs", type=int, default=30)
     parser.add_argument("--max-attempts", type=int, default=100)
     parser.add_argument("--dag-seed", type=int, default=42)
     parser.add_argument("--network-seed", type=int, default=1)

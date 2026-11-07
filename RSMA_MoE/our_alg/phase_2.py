@@ -253,6 +253,16 @@ class Phase2GroupingBackhaulMixin:
         Dict[ServerId, Set[str]],
         list[dict[str, Any]],
     ]:
+        """Step 1 of CFRG: decide which IoTs are selected.
+
+        Greedy coverage: repeatedly select the unselected IoT n that maximizes
+            I(n) = (number of outstanding (server, feature) demands n covers)
+                   * |h_{n, o_n}|^2,
+        where o_n is the reachable server with the best channel, until every
+        demand is covered.  Each newly covered demand is owned by n.  IoTs
+        that end up owning no demand are removed.  The RSMA relationship
+        (delta, step 2) and the grouping DP (step 3) are unchanged.
+        """
         remaining = {
             server_id: set(features)
             for server_id, features in deficits.items()
@@ -261,19 +271,17 @@ class Phase2GroupingBackhaulMixin:
         ownership: Dict[Demand, DeviceId] = {}
         report: list[dict[str, Any]] = []
 
-        # Stage 1: cover every outstanding (server, feature) demand while
-        # charging both the candidate uplink bandwidth and forwarding hops.
         coverage_iteration = 0
         while any(remaining.values()):
-            candidates: list[dict[str, Any]] = []
+            best = None
             for device_id in self.devices:
                 if device_id in selected:
                     continue
-                device = self.devices[device_id]
+                device_features = set(self.devices[device_id].features)
                 covered_by_server = {
-                    server_id: set(device.features) & features
+                    server_id: device_features & features
                     for server_id, features in remaining.items()
-                    if set(device.features) & features
+                    if device_features & features
                 }
                 coverage_gain = sum(len(features) for features in covered_by_server.values())
                 if coverage_gain <= 0:
@@ -281,53 +289,22 @@ class Phase2GroupingBackhaulMixin:
                 origin = self._updated_best_origin(device_id)
                 if origin is None:
                     continue
-                required_features = set().union(*covered_by_server.values())
-                singleton_bandwidth = self._updated_singleton_bandwidth(
-                    device_id,
-                    origin,
-                    required_features,
-                )
-                backhaul_hops = sum(
-                    self.evaluator.wired_weight(origin, server_id)
-                    for server_id in covered_by_server
-                )
-                incompatibility = self._cfrg_selected_incompatibility(device_id, selected)
                 channel_quality = self.evaluator.channel_gain(device_id, origin) ** 2
-                denominator = (
-                    1.0
-                    + self.config.c_bw * singleton_bandwidth
-                    + self.config.c_fwd * backhaul_hops
-                ) * (1.0 + incompatibility)
-                selection_index = self._updated_safe_ratio(
-                    coverage_gain * channel_quality,
-                    denominator,
-                )
-                candidates.append(
-                    {
+                selection_index = coverage_gain * channel_quality
+                key = (selection_index, coverage_gain, self._id_sort_key(device_id))
+                if best is None or key > best["key"]:
+                    best = {
+                        "key": key,
                         "device": device_id,
                         "origin": origin,
                         "covered_by_server": covered_by_server,
                         "coverage_gain": coverage_gain,
                         "channel_quality": channel_quality,
-                        "singleton_bandwidth": singleton_bandwidth,
-                        "backhaul_hops": backhaul_hops,
-                        "incompatibility": incompatibility,
                         "selection_index": selection_index,
                     }
-                )
 
-            if not candidates:
-                break
-            best = max(
-                candidates,
-                key=lambda item: (
-                    item["selection_index"],
-                    item["coverage_gain"],
-                    item["channel_quality"],
-                    -item["backhaul_hops"],
-                    self._id_sort_key(item["device"]),
-                ),
-            )
+            if best is None:
+                break  # some demand cannot be covered by any reachable IoT
             device_id = best["device"]
             selected.append(device_id)
             newly_owned = []
@@ -348,17 +325,10 @@ class Phase2GroupingBackhaulMixin:
                     "origin_candidate": best["origin"],
                     "coverage_gain": best["coverage_gain"],
                     "channel_quality": best["channel_quality"],
-                    "singleton_bandwidth": best["singleton_bandwidth"],
-                    "backhaul_hops": best["backhaul_hops"],
-                    "incompatibility": self._updated_json_number(best["incompatibility"]),
                     "selection_index": best["selection_index"],
                     "newly_owned_demands": newly_owned,
                 }
             )
-
-        # Stage 2 is meaningful only after Stage 1 has established coverage.
-        if not any(remaining.values()):
-            self._updated_localize_ownership(selected, ownership, report)
 
         # Only IoTs that no longer own any destination demand are pruned.
         active_owners = set(ownership.values())

@@ -170,9 +170,9 @@ class ExperimentConfig:
     area_size: float = 1000.0
     cell_radius: float = 300.0
     num_antennas: int = 1
-    iot_features_per_device_range: tuple[int, int] = (4, 8)
+    iot_features_per_device_range: tuple[int, int] = (6, 10)
     iot_server_feature_overlap_ratio: float = 0.2
-    iot_global_random_feature_fraction: float = 0.2
+    iot_global_random_feature_fraction: float = 0.0
     experts_per_server: tuple[int, int] = (10, 15)
     # Scaled for 100 experts: each server must keep the top experts of ~7-8
     # anchored subtasks active (Top-3 union ~260 MB on average, ~335 MB p90),
